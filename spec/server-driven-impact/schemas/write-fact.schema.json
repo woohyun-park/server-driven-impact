@@ -65,6 +65,17 @@
                   "null"
                 ]
               }
+            },
+            "equalityFields": {
+              "type": "object",
+              "additionalProperties": {
+                "type": [
+                  "string",
+                  "number",
+                  "boolean",
+                  "null"
+                ]
+              }
             }
           },
           "required": [
@@ -117,6 +128,17 @@
               ]
             },
             "fields": {
+              "type": "object",
+              "additionalProperties": {
+                "type": [
+                  "string",
+                  "number",
+                  "boolean",
+                  "null"
+                ]
+              }
+            },
+            "equalityFields": {
               "type": "object",
               "additionalProperties": {
                 "type": [

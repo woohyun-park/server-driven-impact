@@ -21,3 +21,4 @@ export type {
 } from './contracts.js';
 export * from './write-set.js';
 export * from './calculate.js';
+export { ImpactUnavailableError } from './errors.js';

@@ -66,6 +66,10 @@ SQL·setup·등록 routine은 서버의 신뢰된 코드다. `execute`의 명시
 
 `pnpm test:sdi:matrix`는 버전별 격리 Docker를 만들고 두 드라이버의 동일 suite를 실행한 뒤 제거한다. 필수 fixture skip은 실패다. native 결과, numeric scale·JSON 원문 변화와 MVCC 비캐시 분류, SQLSTATE, self/outer/lateral/anti join, 집합 연산, 재귀 CTE, window, 페이지 이동, RLS, 함수·view 의존성, COPY/커서, partition, materialized view, migration/rollback/old artifact를 검증한다.
 
-`scripts/backend/benchmark-sdi-postgres.mjs`는 1/1,000/10,000행에 대해 native·broad·narrow observer의 30회 표본 p50/p95/p99와 응답 바이트를 기록한다. 비용 확인용 업무 SELECT는 0회여야 한다. 대량 UPDATE는 OLD/NEW key join을 생략하고 transition rows에서 selector를 직접 수집한다. 상세 한도 초과는 전체 갱신으로 바뀌며 응답 상한을 유지한다. 측정값은 해당 환경의 결과이며 범용 성능 SLA가 아니다.
+`scripts/backend/benchmark-sdi-postgres.mjs`는 1/1,000/10,000행에 대해 native·broad·narrow observer의 30회 표본 p50/p95/p99와 응답 바이트를 기록한다. 비용 확인용 업무 SELECT는 0회여야 한다. 대량 UPDATE는 OLD/NEW key join을 생략하고 transition rows에서 selector를 직접 수집한다. 상세 한도 초과는 공통 조건을 보존하거나 해당 resource/endpoint 범위로 확장하며 응답 상한을 유지한다. 측정값은 해당 환경의 결과이며 범용 성능 SLA가 아니다.
 
 설계 근거: PostgreSQL [dependency tracking](https://www.postgresql.org/docs/18/ddl-depend.html)은 문자열 함수 본문의 의존성을 모두 저장하지 않는다. [node-postgres transaction](https://node-postgres.com/features/transactions)은 동일 client 사용을 요구하며, [pool API](https://node-postgres.com/apis/pool)는 실패한 client의 폐기를 제공한다. 구현은 이 제약을 수명과 비캐시 정책에 반영한다.
+
+## 0.4 native/ORM 연동
+
+pg 8.16.3, postgres.js 3.4.8, 선택 Drizzle 0.45.2 + pg 및 Prisma 7.10.0 + pg를 검증한다. ORM 변경은 기존 Query 의존성과 연결하며 임의 ORM 조회 코드를 자동 분석하지 않는다. 실제 실행과 최종 commit/drain은 같은 연결이다. 연결·메서드·codec·중첩 transaction 지원 범위는 [0.4 이전 가이드](../../docs/migrations/transaction-impact-0.4.md), 자동 도출/확장/거절 경계는 [분석 범위](../../docs/research/query-automation-boundaries.md)에 있다.

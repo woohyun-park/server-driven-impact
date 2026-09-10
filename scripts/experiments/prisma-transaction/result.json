@@ -1,0 +1,232 @@
+{
+  "versions": {
+    "prisma": "7.10.0",
+    "adapterPg": "7.10.0",
+    "pg": "8.16.3",
+    "node": "v25.8.0",
+    "postgres": "18.6 (Debian 18.6-1.pgdg13+2)"
+  },
+  "checks": "PASS",
+  "evidence": [
+    {
+      "token": "success",
+      "phases": [
+        [
+          "prepare",
+          107
+        ],
+        [
+          "callback",
+          107
+        ],
+        [
+          "commit",
+          107
+        ],
+        [
+          "drain",
+          107
+        ]
+      ],
+      "facts": [
+        {
+          "kind": "sdi_prisma_effect",
+          "id": 1
+        },
+        {
+          "kind": "sdi_prisma_child",
+          "id": 101
+        },
+        {
+          "kind": "sdi_prisma_audit",
+          "id": 1
+        }
+      ],
+      "beforeCommit": [
+        {
+          "kind": "sdi_prisma_child",
+          "id": 101
+        },
+        {
+          "kind": "sdi_prisma_effect",
+          "id": 1
+        }
+      ]
+    },
+    "prisma-savepoint-open",
+    "prisma-savepoint-commit",
+    {
+      "token": "savepoint",
+      "phases": [
+        [
+          "prepare",
+          107
+        ],
+        [
+          "callback",
+          107
+        ],
+        [
+          "commit",
+          107
+        ],
+        [
+          "drain",
+          107
+        ]
+      ],
+      "facts": [
+        {
+          "kind": "sdi_prisma_effect",
+          "id": 3
+        },
+        {
+          "kind": "sdi_prisma_audit",
+          "id": 3
+        }
+      ],
+      "beforeCommit": [
+        {
+          "kind": "sdi_prisma_effect",
+          "id": 3
+        }
+      ]
+    },
+    "prisma-savepoint-open",
+    "prisma-savepoint-rollback",
+    {
+      "token": "rollback",
+      "phases": [
+        [
+          "prepare",
+          107
+        ]
+      ],
+      "facts": [],
+      "error": "ROLLBACK_REQUEST",
+      "committed": false
+    },
+    {
+      "token": "commit-failure",
+      "phases": [
+        [
+          "prepare",
+          108
+        ],
+        [
+          "callback",
+          108
+        ]
+      ],
+      "facts": [],
+      "beforeCommit": [
+        {
+          "kind": "sdi_prisma_audit",
+          "id": 999
+        }
+      ],
+      "error": "insert or update on table \"sdi_prisma_audit\" violates foreign key constraint \"sdi_prisma_audit_id_fkey\"",
+      "committed": false
+    },
+    {
+      "token": "drain-failure",
+      "phases": [
+        [
+          "prepare",
+          109
+        ],
+        [
+          "callback",
+          109
+        ],
+        [
+          "commit",
+          109
+        ]
+      ],
+      "facts": [],
+      "beforeCommit": [
+        {
+          "kind": "sdi_prisma_effect",
+          "id": 5
+        }
+      ],
+      "error": "INJECTED_DRAIN_FAILURE",
+      "committed": true
+    },
+    {
+      "token": "parallel-6",
+      "phases": [
+        [
+          "prepare",
+          110
+        ],
+        [
+          "callback",
+          110
+        ],
+        [
+          "commit",
+          110
+        ],
+        [
+          "drain",
+          110
+        ]
+      ],
+      "facts": [
+        {
+          "kind": "sdi_prisma_effect",
+          "id": 6
+        },
+        {
+          "kind": "sdi_prisma_audit",
+          "id": 6
+        }
+      ],
+      "beforeCommit": [
+        {
+          "kind": "sdi_prisma_effect",
+          "id": 6
+        }
+      ]
+    },
+    {
+      "token": "parallel-7",
+      "phases": [
+        [
+          "prepare",
+          111
+        ],
+        [
+          "callback",
+          111
+        ],
+        [
+          "commit",
+          111
+        ],
+        [
+          "drain",
+          111
+        ]
+      ],
+      "facts": [
+        {
+          "kind": "sdi_prisma_effect",
+          "id": 7
+        },
+        {
+          "kind": "sdi_prisma_audit",
+          "id": 7
+        }
+      ],
+      "beforeCommit": [
+        {
+          "kind": "sdi_prisma_effect",
+          "id": 7
+        }
+      ]
+    }
+  ]
+}

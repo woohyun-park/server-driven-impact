@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.0
+
+- Add native pg query configuration, scoped lazy postgres.js tagged execution, and optional Drizzle 0.45.2 / Prisma 7.10.0 adapters over the owned pg connection.
+- Install observer protocol 9 with common batch summaries, resource-local overflow and certified equality filter capture. Regenerate observer artifacts on upgrade.
+- Automatically prune unrelated SQL read columns only when catalog evidence excludes hidden reads; preserve conservative codec and RLS boundaries.
+- Remove unused internal CRUD implementations and require the matching 0.4 core/runtime group.
+
 ## 0.3.0
 
 - Preserve the selected PostgreSQL driver's native successful execution result from `execute()` through `CommandResult.data`, savepoints, and `ImpactUnavailableError.data`. postgres.js returns its metadata-bearing `RowList`; node-postgres returns `QueryResult`, including `command` and `rowCount: number | null`.

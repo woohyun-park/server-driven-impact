@@ -5,7 +5,7 @@ import { canonical, type Scalar } from '@server-driven-impact/core';
 import { bindAdapter, type ImpactAdapter, type QueryManifest, type Resources } from '@server-driven-impact/runtime/adapter';
 import { type ExecutableQueryPlan, type Input } from '@server-driven-impact/runtime';
 import { TrackedDb, type PostgresExecuteResult, type Transaction } from './tracked-db.js';
-import { executeDriver, type DriverExecution } from './driver-execution.js';
+import { executeDriver, type DriverExecution, type DriverQueryOptions } from './driver-execution.js';
 import { compileSelect } from './select.js';
 import { validateCatalog } from './catalog.js';
 import { identifier, sql, Sql } from './sql.js';
@@ -28,14 +28,50 @@ export { compilePostgresArtifacts, type PostgresArtifacts, type PostgresSourceDe
 export type { PostgresMigrationDatabase } from './migration.js';
 export type { PostgresExecuteResult, Row, Transaction } from './tracked-db.js';
 /** Native PostgreSQL operations bound to SDI's observed transaction. */
-export interface PostgresCommandDb<TResult = PostgresExecuteResult> {
+interface CommandOperations<TResult> {
   readonly scope: Scalar;
   execute(statement: Sql): Promise<TResult>;
+  query(text: string, values?: readonly unknown[]): Promise<TResult>;
   copyFrom(statement: Sql, source: AsyncIterable<Uint8Array|string> | Iterable<Uint8Array|string>): Promise<void>;
   copyTo(statement: Sql): AsyncIterable<Uint8Array>;
   cursor(statement: Sql, batchSize?: number): AsyncIterable<Record<string, unknown>[]>;
   refreshMaterializedView(resource: string, options?: {concurrently?:boolean;withData?:boolean}): Promise<void>;
+  savepoint<T>(work: (db: CommandOperations<TResult>) => Promise<T>): Promise<T>;
+}
+export interface PostgresPendingQuery<TResult> extends PromiseLike<TResult> {
+  catch<TResult2 = never>(reject: (error: unknown) => TResult2 | PromiseLike<TResult2>): Promise<TResult | TResult2>;
+  finally(callback: () => void): Promise<TResult>;
+  execute(): Promise<TResult>;
+  cursor(batchSize?: number): AsyncIterable<Record<string, unknown>[]>;
+}
+export interface PostgresCommandDb<TResult = PostgresExecuteResult> extends Omit<CommandOperations<TResult>, 'savepoint'> {
+  (strings: TemplateStringsArray, ...values: unknown[]): PostgresPendingQuery<TResult>;
+  unsafe(text: string, values?: readonly unknown[]): PostgresPendingQuery<TResult>;
   savepoint<T>(work: (db: PostgresCommandDb<TResult>) => Promise<T>): Promise<T>;
+}
+function nativeClient<TResult>(db: CommandOperations<TResult>): PostgresCommandDb<TResult> {
+  const pending = (statement: Sql): PostgresPendingQuery<TResult> => {
+    let execution: Promise<TResult> | undefined;
+    let streaming = false;
+    const run = () => streaming ? Promise.reject(new Error('QUERY_ALREADY_EXECUTED')) : execution ??= db.query(statement.text, statement.values);
+    return {
+      then: (resolve, reject) => run().then(resolve, reject),
+      catch: reject => run().catch(reject),
+      finally: callback => run().finally(callback),
+      execute: run,
+      cursor(batchSize) {
+        if (execution || streaming) throw new Error('QUERY_ALREADY_EXECUTED');
+        streaming = true;
+        return db.cursor(statement, batchSize);
+      },
+    };
+  };
+  return Object.freeze(Object.assign(
+    (strings: TemplateStringsArray, ...values: unknown[]) => pending(sql(strings, ...values)),
+    db,
+    {unsafe: (text: string, values: readonly unknown[] = []) => pending(new Sql(text, [...values])),
+     savepoint: <T>(work: (db: PostgresCommandDb<TResult>) => Promise<T>) => db.savepoint(child => work(nativeClient(child)))},
+  ));
 }
 export interface PostgresOptions<T extends Record<string, unknown> = Record<string, never>> {
   database: postgres.Sql<T>;
@@ -47,16 +83,17 @@ export interface PostgresOptions<T extends Record<string, unknown> = Record<stri
   connectionMode?: 'direct' | 'session' | 'transaction';
 }
 
-function commandDb<TResult>(tracked: TrackedDb<TResult>): PostgresCommandDb<TResult> {
+function commandDb<TResult>(tracked: TrackedDb<TResult>): CommandOperations<TResult> {
   return Object.freeze({
     scope: tracked.scope,
     execute: statement => tracked.execute(statement),
+    query: (text, values) => tracked.query(text, values),
     copyFrom: (statement, source) => tracked.copyFrom(statement, source),
     copyTo: statement => tracked.copyTo(statement),
     cursor: (statement, batchSize) => tracked.cursor(statement, batchSize),
     refreshMaterializedView: (resource, refreshOptions) => tracked.refreshMaterializedView(resource, refreshOptions),
-    savepoint: <T>(work: (db: PostgresCommandDb<TResult>) => Promise<T>) => tracked.savepoint(child => work(commandDb(child))),
-  } satisfies PostgresCommandDb<TResult>);
+    savepoint: <T>(work: (db: CommandOperations<TResult>) => Promise<T>) => tracked.savepoint(child => work(commandDb(child))),
+  } satisfies CommandOperations<TResult>);
 }
 
 export function postgresAdapter<T extends Record<string, unknown>>(options: PostgresOptions<T>): ImpactAdapter<PostgresCommandDb> {
@@ -68,6 +105,7 @@ export function postgresAdapter<T extends Record<string, unknown>>(options: Post
   return Object.freeze({
     [bindAdapter](resources: Resources, manifest: QueryManifest) {
       let quarantined=false;
+      let equalityResources: ReadonlySet<string> = new Set();
       const reserve=async()=>{
         if(quarantined)throw new Error('POSTGRES_SESSION_QUARANTINED');
         return options.database.reserve();
@@ -79,7 +117,7 @@ export function postgresAdapter<T extends Record<string, unknown>>(options: Post
       const layout = observerLayout(fingerprint);
       const performValidation = async (database: Transaction) => {
         if(manifest.postgres?.catalog && await catalogFingerprint(database,manifest.postgres.catalog.schemas)!==manifest.postgres.catalog.fingerprint)throw new Error('POSTGRES_ARTIFACT_DRIFT');
-        await validateCatalog(database,resources,manifest);
+        const validatedEqualityResources = await validateCatalog(database,resources,manifest);
         const rows = await database.unsafe(`select fingerprint,definition_hashes from ${layout.internalSchema}.${layout.metadataTable} where singleton=true`);
         if (rows[0]?.fingerprint !== fingerprint || !rows[0]?.definition_hashes || typeof rows[0].definition_hashes !== 'object') throw new Error('OBSERVER_MANIFEST_MISMATCH');
         const definitionHashes=rows[0].definition_hashes as Record<string,string>;
@@ -124,6 +162,7 @@ export function postgresAdapter<T extends Record<string, unknown>>(options: Post
         const expectedFunctions = Object.entries(resources).filter(([,resource])=>resource.postgresKind!=='materialized-view').flatMap(([resource]) =>
           ['delete','insert','truncate','update'].map(operation => observerInternals.functionName(resource,operation))).sort();
         if (canonical(Object.keys(definitionHashes).sort()) !== canonical(expectedFunctions)) throw new Error('OBSERVER_DEFINITION_SET_MISMATCH');
+        equalityResources = validatedEqualityResources;
       };
       const readTransaction = async <V>(work:(transaction:Transaction)=>Promise<V>):Promise<V> => {
         const session=await reserve();
@@ -180,12 +219,12 @@ export function postgresAdapter<T extends Record<string, unknown>>(options: Post
             await options.setup?.(session,scope);
             const nativeExecution = (session as Transaction & Partial<DriverExecution<PostgresExecuteResult>>)[executeDriver];
             const executeStatement = nativeExecution
-              ? (statement: Sql) => nativeExecution.call(session,statement.text,statement.values)
+              ? (statement: Sql, driverOptions?: DriverQueryOptions) => nativeExecution.call(session,statement.text,statement.values,driverOptions)
               : (statement: Sql) => session.unsafe(statement.text,statement.values as never[]) as Promise<PostgresExecuteResult>;
-            const tracked = new TrackedDb(session,writes,scope,resources,undefined,true,executeStatement);
+            const tracked = new TrackedDb(session,writes,scope,resources,executeStatement);
             const guarded = guardDatabase(commandDb(tracked));
             let data: V;
-            try { data = await work(guarded.db); guarded.finish(); guarded.close(); }
+            try { data = await work(nativeClient(guarded.db)); guarded.finish(); guarded.close(); }
             finally {
               guarded.close();
               try { await guarded.settle(); } catch(error) { broken=true; throw error; }
@@ -208,7 +247,13 @@ export function postgresAdapter<T extends Record<string, unknown>>(options: Post
             } catch (cause) {
               throw new ImpactUnavailableError(data, { cause });
             }
-            try { writes.add(rowsToFacts(observed)); }
+            try {
+              const facts = rowsToFacts(observed);
+              for (const fact of facts) if (!equalityResources.has(fact.resource)) {
+                for (const row of [fact.before,fact.after]) if (row.kind === 'known') delete row.equalityFields;
+              }
+              writes.add(facts);
+            }
             catch (cause) { throw new ImpactUnavailableError(data, { cause }); }
             return data;
           } catch (error) {

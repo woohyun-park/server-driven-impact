@@ -1,4 +1,6 @@
-# SDI 트랜잭션 관찰과 ImpactSet 정확성 중심 최종 계획
+# SDI 트랜잭션 관찰과 ImpactSet 정확성 중심 1차 구현 기록
+
+후속 최종 계획과 구현 상태는 [mutation effect 자동 수집·정밀 영향 분석 계획](./observer-only-command-api.md)을 따른다. 아래 내용은 0.2 전환 당시 기록이다.
 
 작성: 2026-09-10. 상태: 1차 수직 구현 완료. native SQL 경로와 CRUD 제거는 검증됐고 ORM 세션 브리지는 후속 단계다.
 

@@ -62,7 +62,7 @@ describe('bounded facts and conservative impact',()=>{
     const snapshot=writes.snapshot();snapshot[0].after=known('changed');expect(writes.snapshot()[0].after).toEqual(known('x'));
     writes.add(Array.from({length:LIMITS.facts},(_,i)=>fact(i)));
     expect(writes.snapshot()).toHaveLength(1);expect(engine.calculate(writes.snapshot(),'a').targets[0].selector.kind).toBe('all');
-    const bytes=new WriteSet();bytes.add([fact('x'.repeat(LIMITS.factBytes))]);expect(bytes.snapshot()[0].after.kind).toBe('unknown');
+    const bytes=new WriteSet();bytes.add([fact('x'.repeat(LIMITS.factBytes))]);expect(bytes.snapshot()[0].after).toEqual({kind:'known',scope:'a',fields:{}});
     expect(new WriteSet().snapshot()).toEqual([]);writes.close();expect(()=>writes.add([])).toThrow('WRITE_CONTEXT_CLOSED');
   });
   it('selector and response byte budgets widen without dropping endpoints',()=>{

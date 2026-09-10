@@ -71,3 +71,51 @@ describe('PostgreSQL query compiler',()=>{
     expect(plan.reads).toEqual([{resource:'users',columns:'*',bindings:[]}]);
   });
 });
+
+describe('PostgreSQL observed-column precision',()=>{
+  const catalog={
+    resources,
+    resolveRelation:async(reference:{name:string})=>[reference.name],
+    resolveFunction:async()=>[],
+    canPruneColumns:()=>true,
+  };
+  it('includes projection, filter, join, grouping, having and ordering columns',async()=>{
+    const plan=await compilePostgresQuery({
+      text:'select u.status,r.name,count(*) from app.users u join app.roles r on r.id=u.role_id where u.id=$1 group by u.status,r.name having count(u.role_id)>0 order by u.status limit 2 offset 1',
+      parameters:['id'],
+    },resources,18,{catalog});
+    expect(plan.reads).toEqual([
+      {resource:'users',columns:['id','role_id','status'],bindings:[{column:'id',input:'id'}]},
+      {resource:'roles',columns:['id','name'],bindings:[]},
+    ]);
+  });
+  it('treats count(*) as row membership without depending on unrelated column updates',async()=>{
+    const plan=await compilePostgresQuery({text:'select count(*) from app.users where status=$1',parameters:['status']},resources,18,{catalog});
+    expect(plan.reads).toEqual([{resource:'users',columns:['status'],bindings:[{column:'status',input:'status'}]}]);
+  });
+  it.each([
+    'select u.* from app.users u',
+    'select u from app.users u',
+    'select u.id from app.users u join app.roles r using(id)',
+    'select u.id from app.users u natural join app.roles r',
+    'select u.id from app.users u where exists(select 1 from app.roles r where r.id=u.role_id)',
+  ])('widens implicit, whole-row or correlated columns: %s',async text=>{
+    const plan=await compilePostgresQuery({text},resources,18,{catalog});
+    expect(plan.reads.every(read=>read.columns==='*')).toBe(true);
+  });
+  it('requires a catalog proof and retains broad hidden function dependencies',async()=>{
+    const text='select id from app.users';
+    const withoutProof={resources,resolveRelation:catalog.resolveRelation,resolveFunction:catalog.resolveFunction};
+    expect((await compilePostgresQuery({text},resources,18,{catalog:withoutProof})).reads[0].columns).toBe('*');
+    expect((await compilePostgresQuery({text},resources,18,{catalog:{...catalog,canPruneColumns:()=>false}})).reads[0].columns).toBe('*');
+    const hidden=await compilePostgresQuery({text:'select app.visible_users(u.id) from app.users u'},resources,18,{catalog:{...catalog,resolveFunction:async()=>['users']}});
+    expect(hidden.reads).toEqual([{resource:'users',columns:'*',bindings:[]}]);
+  });
+  it('keeps distinct column dependencies for self-join read alternatives',async()=>{
+    const plan=await compilePostgresQuery({text:'select a.status,b.role_id from app.users a cross join app.users b where a.id=$1 and b.id=$2',parameters:['left','right']},resources,18,{catalog});
+    expect(plan.reads).toEqual([
+      {resource:'users',columns:['id','status'],bindings:[{column:'id',input:'left'}]},
+      {resource:'users',columns:['id','role_id'],bindings:[{column:'id',input:'right'}]},
+    ]);
+  });
+});

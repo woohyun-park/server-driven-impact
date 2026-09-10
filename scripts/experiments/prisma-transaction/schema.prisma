@@ -1,0 +1,19 @@
+generator client {
+  provider = "prisma-client-js"
+  output = "./generated"
+}
+datasource db {
+  provider = "postgresql"
+}
+model Effect {
+  id Int @id
+  value String
+  children Child[]
+  @@map("sdi_prisma_effect")
+}
+model Child {
+  id Int @id
+  effectId Int
+  effect Effect @relation(fields: [effectId], references: [id], onDelete: Cascade)
+  @@map("sdi_prisma_child")
+}

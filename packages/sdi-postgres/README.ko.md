@@ -130,3 +130,9 @@ PostgreSQL 14–18에서 postgres.js와 pg를 모두 사용하는 conformance su
 Node.js 22.18 이상이 필요합니다.
 
 0.1.x에서 올리는 경우 누락 내용을 보완한 [0.2.0 마이그레이션 문서](../../docs/migrations/postgres-0.2.md)를 참고하세요.
+
+## Native 실행과 선택 ORM 연동
+
+0.4는 pg의 `tx.query(text, values)`, postgres.js의 지연 실행 tagged query, 선택 subpath인 `drizzleAdapter`·`prismaAdapter`를 제공합니다. Drizzle 0.45.2 또는 Prisma/client/adapter-pg/driver-adapter-utils 7.10.0과 pg 8.16.3 조합을 사용합니다. ORM의 실제 실행은 보호된 같은 연결을 통과하고, 중첩 transaction은 SDI savepoint에 연결됩니다. 업무 함수에는 command client를 명시적으로 전달합니다.
+
+업그레이드 시 observer protocol 9 artifact를 재생성·설치해야 합니다. 지원 메서드·설치·수명·codec·예제는 [0.4 이전 가이드](../../docs/migrations/transaction-impact-0.4.md)를 참고하세요.

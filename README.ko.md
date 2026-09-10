@@ -4,6 +4,10 @@
 
 Server-Driven Impact(SDI)는 데이터베이스 Command가 끝난 뒤 어떤 등록 Query 결과가 오래됐을 가능성이 있는지 계산하는 백엔드 라이브러리입니다.
 
+SDI의 궁극적인 목표는 mutation 함수가 DB에 일으킨 직접·간접 변경을 WriteSet으로 최대한 자동 수집하고, 영향받는 조회·입력 범위를 누락 없이 가능한 만큼 좁혀 `{ data, impact }`로 프론트엔드에 전달하는 것입니다. 개발자는 mutation마다 변경 사실이나 갱신할 Query 목록을 수동으로 작성하지 않습니다. Resource/Query 등록은 필요하며, 지원 범위에서 안전하게 좁힐 근거가 부족할 때만 보수적으로 확장합니다.
+
+검증된 실행 경로는 pg·postgres.js·SQLite와 선택 연동인 Drizzle 0.45.2 + pg, Prisma 7.10.0 + pg입니다. [지원 범위와 0.4 이전 가이드](./docs/migrations/transaction-impact-0.4.md), [자동 분석의 경계](./docs/research/query-automation-boundaries.md)를 확인하세요.
+
 주문 한 건의 고객이 `old`에서 `new`로 바뀌었다고 해보겠습니다. 해당 주문의 상세 조회와 두 고객의 주문 목록은 이제 오래된 결과일 수 있습니다. SDI는 커밋된 쓰기를 관찰하고 그 관계를 다음과 같은 데이터로 반환합니다.
 
 ```json

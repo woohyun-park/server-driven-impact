@@ -53,3 +53,5 @@ database.close();
 Commands return `{ data, impact }`. The application decides how to serialize that value over HTTP and how a frontend uses it. `validate()` is explicit and is suitable for startup, deployment, or a health check; normal Query and Command execution does not scan the whole database catalog.
 
 Adapter authors use the stable contract exported by `@server-driven-impact/runtime/adapter`. Diagnostic helpers are exported by `@server-driven-impact/runtime/debug`. Node.js 22.18 or newer is required.
+
+The mutation contract is automatic committed WriteSet collection followed by safely narrowed ImpactSet calculation and `{ data, impact }` return. Native and ORM adapter clients keep their own execution semantics; Query dependency registration remains required. [0.4 support and migration](../../docs/migrations/transaction-impact-0.4.md).

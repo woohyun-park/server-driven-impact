@@ -1,0 +1,16 @@
+{
+  "name": "sdi-prisma-transaction-feasibility",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "generate": "prisma generate --schema schema.prisma",
+    "test": "node experiment.mjs"
+  },
+  "dependencies": {
+    "@prisma/adapter-pg": "7.10.0",
+    "@prisma/client": "7.10.0",
+    "@prisma/driver-adapter-utils": "7.10.0",
+    "pg": "8.16.3",
+    "prisma": "7.10.0"
+  }
+}

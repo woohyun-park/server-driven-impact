@@ -49,7 +49,7 @@ it('rejects removed CRUD policy and routine options instead of silently ignoring
 
 it('exposes one flat native PostgreSQL command surface',async()=>{
   await fixture().engine.command({scope:'u'},async db=>{
-    expect(Object.keys(db).sort()).toEqual(['copyFrom','copyTo','cursor','execute','refreshMaterializedView','savepoint','scope']);
+    expect(Object.keys(db).sort()).toEqual(['copyFrom','copyTo','cursor','execute','query','refreshMaterializedView','savepoint','scope','unsafe']);
     expect(db).not.toHaveProperty('insert');
     expect(db).not.toHaveProperty('postgres');
   });

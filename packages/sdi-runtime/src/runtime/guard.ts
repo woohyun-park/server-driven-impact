@@ -1,5 +1,10 @@
 /** Guard the public transaction object, including adapter-specific extensions. */
-export function guardDatabase<T extends object>(database: T) {
+export interface GuardOptions {
+  /** Native synchronous APIs are checked without converting their results to promises. */
+  syncMethods?: ReadonlySet<string>;
+  syncFactories?: ReadonlySet<string>;
+}
+export function guardDatabase<T extends object>(database: T, options: GuardOptions = {}) {
   let open = true;
   let pending = 0;
   let savepoint = false;
@@ -15,14 +20,21 @@ export function guardDatabase<T extends object>(database: T) {
         continue;
       }
       result[key] = (...args: unknown[]) => {
-        if (!open) return Promise.reject(new Error('WRITE_CONTEXT_CLOSED'));
-        if (savepoint || (key === 'savepoint' && pending)) return Promise.reject(new Error('OVERLAPPING_SAVEPOINT'));
+        const synchronous = options.syncMethods?.has(key) || options.syncFactories?.has(key);
+        if (!open) {
+          if (synchronous) throw new Error('WRITE_CONTEXT_CLOSED');
+          return Promise.reject(new Error('WRITE_CONTEXT_CLOSED'));
+        }
+        if (savepoint || (key === 'savepoint' && pending)) {
+          if (synchronous) throw new Error('OVERLAPPING_SAVEPOINT');
+          return Promise.reject(new Error('OVERLAPPING_SAVEPOINT'));
+        }
         pending++;
         if (key === 'savepoint') {
           savepoint = true;
           const callback = args[0] as (db: object) => Promise<unknown>;
           args[0] = async (child: object) => {
-            const guarded = guardDatabase(child);
+            const guarded = guardDatabase(child, options);
             children.add(guarded);
             try { const data = await callback(guarded.db); guarded.finish(); return data; }
             finally { guarded.close(); await guarded.settle(); children.delete(guarded); }
@@ -34,6 +46,10 @@ export function guardDatabase<T extends object>(database: T) {
           pending--; if (key === 'savepoint') savepoint = false;
           if (key !== 'savepoint') failed = true;
           throw error;
+        }
+        if (synchronous) {
+          pending--;
+          return options.syncFactories?.has(key) && returned && typeof returned === 'object' ? wrap(returned) : returned;
         }
         if (returned && typeof returned === 'object' && Symbol.asyncIterator in returned) {
           const iterator=(returned as AsyncIterable<unknown>)[Symbol.asyncIterator]();

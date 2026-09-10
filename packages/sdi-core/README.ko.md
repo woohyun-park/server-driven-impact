@@ -74,3 +74,5 @@ console.log(calculateImpact(writes, {
 - `canonical()`: 지원되는 JSON 값의 결정적 표현을 만듭니다.
 
 Node.js 22.18 이상이 필요합니다.
+
+WriteSet은 상한을 넘긴 resource부터 요약하고 제한된 크기 안에서 OLD/NEW 공통 scope·field를 보존합니다. selector 개수 상한은 공통 조건을 유지하고, byte 상한은 개별 target부터 확장합니다. `createImpact().command()`는 adapter의 COMMIT·기록 회수 후 계산하며, commit 이후 계산 실패를 `ImpactUnavailableError`로 구분합니다. [의미 명세](../../spec/server-driven-impact/semantics.md).

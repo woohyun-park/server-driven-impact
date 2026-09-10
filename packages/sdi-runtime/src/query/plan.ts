@@ -1,4 +1,4 @@
-import { LIMITS, byteLength, validateImpactManifest, type ImpactManifest, type ReadDependency } from '@server-driven-impact/core';
+import { LIMITS, byteLength, canonical, isScalar, validateImpactManifest, type ImpactManifest, type ReadDependency } from '@server-driven-impact/core';
 import { validateResources, type Resources } from '../resources.js';
 type ResourceId = string;
 export type { ReadDependency } from '@server-driven-impact/core';
@@ -70,6 +70,14 @@ export const q = {
   choose(choices: Record<string, Plan>, choose: (input: Input) => string): Plan { return { kind: 'choose', choices, choose }; },
 };
 
+// Both executors ignore the count root projection, ordering, pagination and
+// optional joins. Keep dependency derivation aligned with that execution path.
+function readOptions(plan: SelectPlan): SelectOptions {
+  return plan.result === 'count'
+    ? { columns: [], where: plan.options.where, joins: plan.options.joins?.filter(join => join.required) }
+    : plan.options;
+}
+
 export function compileManifest(queries: Record<string, QueryDefinition>, resources: Resources): Manifest {
   validateResources(resources);
   const assertResource = (id: string) => { if (!Object.hasOwn(resources,id)) throw new Error(`Unregistered resource: ${id}`); };
@@ -91,7 +99,7 @@ export function compileManifest(queries: Record<string, QueryDefinition>, resour
   }
   function walk(plan: Plan): ResourceId[] {
     switch (plan.kind) {
-      case 'select': return select(plan.resource, plan.options);
+      case 'select': return select(plan.resource, readOptions(plan));
       case 'postgres-query': nativePlans.push(plan); return plan.reads.map(read => read.resource);
       case 'value': return [];
       case 'call': return endpoint(plan.endpoint);
@@ -119,6 +127,20 @@ export function compileManifest(queries: Record<string, QueryDefinition>, resour
       }
       return predicate.op === '=' && predicate.value?.kind === 'input' ? [{column:predicate.field,input:predicate.value.field}] : [];
     };
+    const guaranteedFilters = (predicate: Predicate): NonNullable<ReadDependency['filters']> => {
+      if ('predicate' in predicate) return [];
+      if ('predicates' in predicate && predicate.kind === 'and') return predicate.predicates.flatMap(guaranteedFilters);
+      if ('predicates' in predicate) {
+        const branches = predicate.predicates.map(guaranteedFilters);
+        if (!branches.length) return [];
+        return branches[0].filter(filter => branches.slice(1).every(branch => branch.some(candidate => candidate.column === filter.column && candidate.value === filter.value)));
+      }
+      return predicate.op === '=' && predicate.value?.kind === 'literal' && isScalar(predicate.value.value)
+        ? [{column:predicate.field,value:predicate.value.value}] : [];
+    };
+    // Every retained condition is necessary independently, so truncating this
+    // list is a safe loss of precision when a plan exceeds the bounded format.
+    const filters = [...new Map((options.where ?? []).flatMap(guaranteedFilters).map(filter => [canonical(filter),filter])).values()].slice(0,LIMITS.readFilters);
     const predicates = (options.where ?? []).flatMap(atomic);
     const columns = options.columns ? [...new Set([
       ...options.columns, ...predicates.map(p => p.field),
@@ -130,11 +152,11 @@ export function compileManifest(queries: Record<string, QueryDefinition>, resour
       const propagated = bindings.filter(binding => binding.column === join.local).map(binding => ({column:join.foreign,input:binding.input}));
       return readSelect(join.resource, join, propagated, join.foreign);
     });
-    return [{ resource, columns, bindings }, ...children];
+    return [{ resource, columns, bindings, ...(filters.length ? {filters} : {}) }, ...children];
   }
   function readsFor(plan: Plan): ReadDependency[] {
     switch (plan.kind) {
-      case 'select': return readSelect(plan.resource, plan.options);
+      case 'select': return readSelect(plan.resource, readOptions(plan));
       case 'postgres-query': return [...plan.reads];
       case 'value': return [];
       // Arbitrary input mapping cannot be inverted safely. Retain columns, widen inputs.

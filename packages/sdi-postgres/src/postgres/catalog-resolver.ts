@@ -14,10 +14,12 @@ export interface PostgresCatalogResolver {
   readonly schemas?: readonly string[];
   resolveRelation(reference: CatalogRelationReference): Promise<readonly string[]>;
   resolveFunction(reference: CatalogFunctionReference): Promise<readonly string[]>;
+  /** True only after resolution proves a direct table has no hidden column reads. */
+  canPruneColumns?(reference: CatalogRelationReference): boolean;
 }
 
 type ObjectReference = { kind: 'relation' | 'function'; oid: string };
-type RelationRow = { oid: string; schema_name: string; object_name: string; relkind: string; relispartition?: boolean; columns?: string[]; pk?: string[] };
+type RelationRow = { oid: string; schema_name: string; object_name: string; relkind: string; relispartition?: boolean; relhasrules?: boolean; columns?: string[]; pk?: string[] };
 type FunctionRow = { oid: string; schema_name: string; object_name: string; lanname: string; prosrc: string; provolatile: string; proconfig: string[]|null; sqlbody?:string|null; custom_types?:boolean };
 
 function key(reference: CatalogRelationReference | CatalogFunctionReference): string {
@@ -42,6 +44,8 @@ export function createPostgresCatalogResolver(
   if(!['reject','ignore'].includes(nonRowDependencies))throw new Error('INVALID_NON_ROW_DEPENDENCY_POLICY');
   const relationCache = new Map<string, Promise<readonly string[]>>();
   const functionCache = new Map<string, Promise<readonly string[]>>();
+  const prunableRelations = new Set<string>();
+  const columnPruning = new Map<string, boolean>();
   const resolvedResources:Resources={...resources};
   const schemas=new Set(searchPath);
   let expansions=0;
@@ -72,7 +76,7 @@ export function createPostgresCatalogResolver(
     const cacheKey=key(reference);
     if (!path.size && relationCache.has(cacheKey)) return relationCache.get(cacheKey)!;
     const pending=(async()=>{
-      const rows=await database.unsafe(`select c.oid::text,n.nspname as schema_name,c.relname as object_name,c.relkind,c.relispartition,
+      const rows=await database.unsafe(`select c.oid::text,n.nspname as schema_name,c.relname as object_name,c.relkind,c.relispartition,c.relhasrules,
         array(select a.attname::text from pg_attribute a where a.attrelid=c.oid and a.attnum>0 and not a.attisdropped order by a.attnum) as columns,
         array(select a.attname::text from pg_index i cross join lateral unnest(i.indkey) with ordinality keys(k,ordinal) join pg_attribute a on a.attrelid=c.oid and a.attnum=keys.k where i.indrelid=c.oid and i.indisprimary order by keys.ordinal) as pk
         from pg_class c join pg_namespace n on n.oid=c.relnamespace
@@ -80,7 +84,9 @@ export function createPostgresCatalogResolver(
         order by case when $2::text is not null then 0 else array_position($3::text[],n.nspname) end`,
         [reference.name,reference.schema ?? null,searchPath]) as unknown as RelationRow[];
       if (!rows.length) throw new Error(`UNRESOLVED_QUERY_RELATION:${reference.schema ? `${reference.schema}.` : ''}${reference.name}`);
-      return expand({kind:'relation',oid:rows[0].oid},new Set(path));
+      const resolved = await expand({kind:'relation',oid:rows[0].oid},new Set(path));
+      columnPruning.set(cacheKey, prunableRelations.has(`${rows[0].schema_name}.${rows[0].object_name}`));
+      return resolved;
     })();
     if (!path.size) relationCache.set(cacheKey,pending);
     return pending;
@@ -120,7 +126,7 @@ export function createPostgresCatalogResolver(
     let directResource: string | undefined;
     let bodyReads: string[] = [];
     if (object.kind==='relation') {
-      const rows=await database.unsafe(`select c.oid::text,n.nspname as schema_name,c.relname as object_name,c.relkind,c.relispartition,
+      const rows=await database.unsafe(`select c.oid::text,n.nspname as schema_name,c.relname as object_name,c.relkind,c.relispartition,c.relhasrules,
         array(select a.attname::text from pg_attribute a where a.attrelid=c.oid and a.attnum>0 and not a.attisdropped order by a.attnum) as columns,
         array(select a.attname::text from pg_index i cross join lateral unnest(i.indkey) with ordinality keys(k,ordinal) join pg_attribute a on a.attrelid=c.oid and a.attnum=keys.k where i.indrelid=c.oid and i.indisprimary order by keys.ordinal) as pk
         from pg_class c join pg_namespace n on n.oid=c.relnamespace where c.oid=$1::oid`,[object.oid]) as unknown as RelationRow[];
@@ -128,6 +134,12 @@ export function createPostgresCatalogResolver(
       if (!current) throw new Error(`UNRESOLVED_CATALOG_OBJECT:relation:${object.oid}`);
       schemas.add(current.schema_name);
       const policies=await database.unsafe('select pg_get_expr(polqual,polrelid) as expression from pg_policy where polrelid=$1::oid',[current.oid]);
+      // RLS may inspect unprojected columns of this very table. A list of
+      // resource IDs cannot express those hidden reads, so only proven plain
+      // tables permit the SQL compiler to prune observed columns.
+      if (['r','p'].includes(current.relkind) && current.relhasrules === false && policies.length === 0) {
+        prunableRelations.add(`${current.schema_name}.${current.object_name}`);
+      }
       for(const policy of policies)if(policy.expression){
         const parser=require(`@pgsql/parser/v${options.parserVersion ?? 18}`) as {parse(text:string):Promise<unknown>};
         const references=sqlReferences(await parser.parse(`select 1 where (${policy.expression})`));
@@ -216,5 +228,6 @@ export function createPostgresCatalogResolver(
     get schemas() { return [...schemas].sort(); },
     resolveRelation: (reference: CatalogRelationReference) => relation(reference,new Set()),
     resolveFunction: (reference: CatalogFunctionReference) => routine(reference,new Set()),
+    canPruneColumns: (reference: CatalogRelationReference) => columnPruning.get(key(reference)) === true,
   });
 }

@@ -1,0 +1,91 @@
+{
+  "resources": {
+    "records": {
+      "scopeColumn": null,
+      "columns": [
+        "id",
+        "status",
+        "customer"
+      ]
+    }
+  },
+  "manifest": {
+    "protocolVersion": 1,
+    "reads": {
+      "ready": [
+        {
+          "resource": "records",
+          "columns": [
+            "id",
+            "status",
+            "customer"
+          ],
+          "bindings": [
+            {
+              "column": "customer",
+              "input": "customer"
+            }
+          ],
+          "filters": [
+            {
+              "column": "status",
+              "value": "ready"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "scope": null,
+  "writes": [
+    {
+      "resource": "records",
+      "operation": "update",
+      "before": {
+        "kind": "known",
+        "scope": null,
+        "fields": {
+          "customer": "a"
+        },
+        "equalityFields": {
+          "status": "ready"
+        }
+      },
+      "after": {
+        "kind": "known",
+        "scope": null,
+        "fields": {
+          "customer": "b"
+        },
+        "equalityFields": {
+          "status": "draft"
+        }
+      },
+      "changedColumns": [
+        "status",
+        "customer"
+      ]
+    }
+  ],
+  "impact": {
+    "protocolVersion": 1,
+    "targets": [
+      {
+        "endpoint": "ready",
+        "scope": "global",
+        "selector": {
+          "kind": "inputs",
+          "values": [
+            {
+              "customer": "a"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "reasons": [
+    "matched",
+    "filter-excluded"
+  ]
+}
