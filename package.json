@@ -31,13 +31,19 @@
   },
   "devDependencies": {
     "@changesets/cli": "3.0.2",
+    "@prisma/adapter-pg": "7.10.0",
+    "@prisma/client": "7.10.0",
+    "@prisma/client-runtime-utils": "7.10.0",
+    "@prisma/driver-adapter-utils": "7.10.0",
     "@server-driven-impact/sqlite": "workspace:^",
     "@types/node": "25.9.1",
     "@types/pg": "8.15.5",
     "ajv": "8.17.1",
+    "drizzle-orm": "0.45.2",
     "pg": "8.16.3",
     "pg-copy-streams": "7.0.0",
     "postgres": "3.4.8",
+    "prisma": "7.10.0",
     "typescript": "6.0.3",
     "vitest": "4.1.7"
   }

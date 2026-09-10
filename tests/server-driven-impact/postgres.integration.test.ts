@@ -201,9 +201,9 @@ describe.skipIf(!enabled)('orders domain / real PostgreSQL conformance',()=>{
   });
   it('catalog accepts composite and keyless tables while retaining unsupported table checks',async()=>{
     await admin.unsafe(`create table "${schema}".composite(a int,b int,value text,primary key(a,b))`);
-    await expect(validateCatalog(admin,{test:{schema,table:'composite',idColumn:['a','b'],scopeColumn:null,columns:['a','b','value'],selectorColumns:['a','b']}})).resolves.toBeUndefined();
+    await expect(validateCatalog(admin,{test:{schema,table:'composite',idColumn:['a','b'],scopeColumn:null,columns:['a','b','value'],selectorColumns:['a','b']}})).resolves.toEqual(new Set(['test']));
     await admin.unsafe(`create table "${schema}".keyless(a int,b int)`);
-    await expect(validateCatalog(admin,{test:{schema,table:'keyless',idColumn:null,scopeColumn:null,columns:['a','b'],selectorColumns:['a']}})).resolves.toBeUndefined();
+    await expect(validateCatalog(admin,{test:{schema,table:'keyless',idColumn:null,scopeColumn:null,columns:['a','b'],selectorColumns:['a']}})).resolves.toEqual(new Set(['test']));
     await admin.unsafe(`create table "${schema}".partitioned(id int primary key) partition by range(id)`);
     await expect(validateCatalog(admin,{test:{schema,table:'partitioned',idColumn:'id',scopeColumn:null,columns:['id'],selectorColumns:['id']}})).rejects.toThrow('UNSUPPORTED_TABLE');
     await admin.unsafe(`create table "${schema}".parent(id int primary key);create table "${schema}".child() inherits("${schema}".parent)`);
@@ -270,8 +270,8 @@ describe.skipIf(!enabled)('orders domain / real PostgreSQL conformance',()=>{
       parameters:['left','right'],
     },compatibilityResources,serverMajor as 14|15|16|17|18,{catalog});
     expect(pairPlan.reads).toEqual([
-      {resource:'users',columns:'*',bindings:[{column:'id',input:'left'}]},
-      {resource:'users',columns:'*',bindings:[{column:'id',input:'right'}]},
+      {resource:'users',columns:['id','name'],bindings:[{column:'id',input:'left'}]},
+      {resource:'users',columns:['id','name'],bindings:[{column:'id',input:'right'}]},
     ]);
     const pairQueries=defineQueries({pair:{input:{parse:(value:unknown)=>value as Record<string,unknown>},plan:pairPlan}});
     await admin.unsafe(generateObserverMigration(compatibilityResources,compileManifest(pairQueries,compatibilityResources),{runtimeRole:'routine_runtime'}));

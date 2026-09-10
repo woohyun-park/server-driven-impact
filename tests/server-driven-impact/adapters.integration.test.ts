@@ -12,7 +12,8 @@ import { ordersDomain } from '../../examples/orders-impact/domain.js';
 const adminUrl = process.env.SDI_POSTGRES_ADMIN_URL;
 const runtimeUrl = process.env.SDI_POSTGRES_RUNTIME_URL;
 const pgEnabled = Boolean(adminUrl && runtimeUrl);
-if (pgEnabled && (new URL(adminUrl!).hostname !== '127.0.0.1' || new URL(adminUrl!).port !== '54332')) throw new Error('LOCAL_FIXTURES_ONLY');
+if (process.env.SDI_POSTGRES_REQUIRED === '1' && !pgEnabled) throw new Error('POSTGRES_FIXTURES_REQUIRED');
+if (pgEnabled && !['127.0.0.1','localhost','::1'].includes(new URL(adminUrl!).hostname)) throw new Error('LOCAL_FIXTURES_ONLY');
 type TestDb = PostgresCommandDb | SqliteCommandDb;
 const relation = (resource: string) => resource === 'items' ? 'order_items' : resource;
 async function insert(dialect: 'sqlite'|'postgres', schema: string, db: TestDb, resource: string, rows: Record<string, unknown>[], returnRows = false) {
@@ -143,13 +144,13 @@ for (const dialect of ['sqlite', 'postgres'] as const) describe.skipIf(dialect =
       }
     }
   });
-  it('large writes widen without tracking tables or extra public hooks', async () => {
+  it('large writes widen detail while retaining proven common list inputs', async () => {
     const result = await engine.command(context, db => insert(dialect, schema, db, 'orders', Array.from({ length: 210 }, (_, i) => order('bulk' + i))));
     expect(result.data.count).toBe(210);
     expect(result.impact.targets.find(t=>t.endpoint==='orders.detail')?.selector.kind).toBe('all');
-    expect(result.impact.targets.find(t=>t.endpoint==='orders.list')?.selector).toEqual({kind:'all'});
+    expect(result.impact.targets.find(t=>t.endpoint==='orders.list')?.selector).toEqual(dialect==='postgres' ? {kind:'inputs',values:[{customer:'first'}]} : {kind:'all'});
     const changed = await engine.command(context, db => update(dialect, schema, db, 'orders', { status: 'draft' }, {}));
     expect(changed.impact.targets.find(t=>t.endpoint==='orders.ready')?.selector.kind).toBe('all');
-    expect(changed.impact.targets.find(t=>t.endpoint==='orders.list')?.selector).toEqual({kind:'all'});
+    expect(changed.impact.targets.find(t=>t.endpoint==='orders.list')?.selector).toEqual(dialect==='postgres' ? {kind:'inputs',values:[{customer:'first'}]} : {kind:'all'});
   });
 });

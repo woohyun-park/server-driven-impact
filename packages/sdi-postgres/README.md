@@ -78,3 +78,9 @@ The conformance suite covers PostgreSQL 14–18 with postgres.js and pg. Transac
 Node.js 22.18 or newer is required.
 
 When upgrading from 0.1.x, see the corrected [0.2.0 migration guide](../../docs/migrations/postgres-0.2.md).
+
+## Native and optional ORM commands
+
+Version 0.4 adds native `tx.query(text, values)` for pg, scoped lazy postgres.js tagged queries, and optional `drizzleAdapter` / `prismaAdapter` subpaths. Pin Drizzle 0.45.2 or Prisma/client/adapter-pg/driver-adapter-utils 7.10.0 with pg 8.16.3. ORM clients execute through the guarded connection; their nested transactions use SDI savepoints. Repositories receive the command client explicitly.
+
+Regenerate and install observer protocol 9 artifacts when upgrading. See [0.4 migration and support](../../docs/migrations/transaction-impact-0.4.md) for supported native methods, installation, lifecycle limits, codecs and examples.

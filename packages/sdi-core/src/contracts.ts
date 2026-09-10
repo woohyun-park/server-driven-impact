@@ -1,6 +1,8 @@
 export type Scalar = string | number | boolean | null;
 export type RowState = { kind: 'absent' } | { kind: 'unknown' } | {
   kind: 'known'; scope: Scalar; fields: Record<string, Scalar>;
+  /** Observer-certified scalar equality values; absent means filtering is unproved. */
+  equalityFields?: Record<string, Scalar>;
 };
 export interface WriteFact {
   resource: string;
@@ -13,6 +15,8 @@ export interface ReadDependency {
   resource: string;
   columns: '*' | string[];
   bindings: { column: string; input: string }[];
+  /** Necessary literal equalities, interpreted as a conjunction. */
+  filters?: { column: string; value: Scalar }[];
 }
 /** Database-independent input consumed by the impact calculator. */
 export interface ImpactManifest {
@@ -28,7 +32,7 @@ export interface ImpactResource {
   columns: readonly string[];
 }
 export type ImpactResources = Record<string, ImpactResource>;
-export const LIMITS = Object.freeze({ facts: 200, selectors: 100, factBytes: 131072, impactBytes: 131072, manifestBytes: 1048576, endpoints: 512, resources: 128 });
+export const LIMITS = Object.freeze({ facts: 200, selectors: 100, readFilters: 100, factBytes: 131072, impactBytes: 131072, manifestBytes: 1048576, endpoints: 512, resources: 128 });
 export function isScalar(value: unknown): value is Scalar {
   return value === null || typeof value === 'string' || typeof value === 'boolean' || (typeof value === 'number' && Number.isFinite(value));
 }
@@ -48,7 +52,7 @@ export function matchesInputSelector(input: Record<string, unknown>, selector: u
   if (s.values.some(v => !v || typeof v !== 'object' || Array.isArray(v) || !Object.values(v).every(isScalar))) return true;
   return s.values.some(v => Object.entries(v).every(([key,expected]) => !Object.hasOwn(input,key) || scalarMayEqual(input[key],expected)));
 }
-function scalarMayEqual(actual: unknown, expected: unknown): boolean {
+export function scalarMayEqual(actual: unknown, expected: unknown): boolean {
   if (actual === expected) return true;
   if (actual === null || expected === null) return false;
   if (typeof actual === 'string' && typeof expected === 'string') {
@@ -86,7 +90,8 @@ export function validateImpactManifest(manifest: ImpactManifest, resources: Impa
     for (const read of reads) {
       if (!Object.hasOwn(resources,read.resource)) throw new Error('UNREGISTERED_RESOURCE');
       const r = resources[read.resource];
-      for (const c of [...(read.columns === '*' ? [] : read.columns),...read.bindings.map(b => b.column)]) if (!r.columns.includes(c)) throw new Error('UNREGISTERED_COLUMN');
+      if (read.filters !== undefined && (!Array.isArray(read.filters) || read.filters.length > LIMITS.readFilters || read.filters.some(filter => !filter || typeof filter.column !== 'string' || !isScalar(filter.value)))) throw new Error('INVALID_READ_FILTER');
+      for (const c of [...(read.columns === '*' ? [] : read.columns),...read.bindings.map(b => b.column),...(read.filters ?? []).map(filter => filter.column)]) if (!r.columns.includes(c)) throw new Error('UNREGISTERED_COLUMN');
       for (const b of read.bindings) if (!b.input || b.input.length > 128) throw new Error('INVALID_BINDING');
     }
   }

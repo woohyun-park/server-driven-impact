@@ -45,6 +45,8 @@ console.log(impact);
 database.close();
 ```
 
-The adapter observes native DML, triggers, foreign-key cascades, rollback, and savepoints inside the Command transaction. It uses connection-local TEMP observers, so share one adapter for each `DatabaseSync` connection.
+The adapter observes native DML, triggers, foreign-key cascades, rollback, and savepoints inside the Command transaction. It uses connection-local TEMP observers, and serializes managed use of each `DatabaseSync` connection.
 
-Version 0.1 supports Node's synchronous SQLite driver, the `main` database, ordinary tables with one primary-key column, registered `TEXT`, `INTEGER`, or `REAL` columns, and SQLite's built-in `BINARY`, `NOCASE`, and `RTRIM` collations. `ATTACH`, virtual tables, generated or hidden columns, custom collations, `REPLACE` (including schema-level conflict policies), transaction control, and DDL inside a Command are rejected. Node.js 22.18 or newer is required.
+Version 0.4 supports Node's synchronous SQLite driver, the `main` database, ordinary tables with one primary-key column, registered `TEXT`, `INTEGER`, or `REAL` columns, and SQLite's built-in `BINARY`, `NOCASE`, and `RTRIM` collations. `ATTACH`, virtual tables, generated or hidden columns, custom collations, `REPLACE`, `INSERT OR REPLACE`, `UPDATE OR REPLACE`, schema-level `ON CONFLICT REPLACE`, transaction control, and DDL inside a Command are rejected. Node.js 22.18 or newer is required.
+
+Version 0.4 also supports synchronous `tx.prepare(text).run/get/all` with native results, including `changes` and `lastInsertRowid`. Escaped prepared statements reject after their command or savepoint closes. Shared managed connections serialize commands and switch observer definitions as needed. Collector overflow preserves unrelated resource detail where the shared budget permits. [Migration and limits](../../docs/migrations/transaction-impact-0.4.md).

@@ -79,13 +79,29 @@ import {createImpact,defineQueries} from '@server-driven-impact/runtime';
 import {describeQueries} from '@server-driven-impact/runtime/debug';
 import * as postgresAdapter from '@server-driven-impact/postgres';
 import {pgAdapter,type PgCommandDb} from '@server-driven-impact/postgres/pg';
-import {sqliteAdapter} from '@server-driven-impact/sqlite';
+import {sqliteAdapter,type SqliteCommandDb} from '@server-driven-impact/sqlite';
+import type {StatementResultingChanges,SQLInputValue,SQLOutputValue} from 'node:sqlite';
 for (const value of [calculateImpact,createImpact,defineQueries,describeQueries,postgresAdapter.postgresAdapter,pgAdapter,sqliteAdapter]) {
   if (typeof value !== 'function') throw new Error('MISSING_PUBLIC_API');
 }
-function resultTypes(nodePg:PgCommandDb,postgresJs:postgresAdapter.PostgresCommandDb) {
+function resultTypes(nodePg:PgCommandDb,postgresJs:postgresAdapter.PostgresCommandDb,sqlite:SqliteCommandDb) {
   void nodePg.execute(postgresAdapter.sql\`select 1\`).then(result=>{const count:number|null=result.rowCount;const rows:Record<string,unknown>[]=result.rows;void count;void rows;});
   void postgresJs.execute(postgresAdapter.sql\`select 1\`).then(result=>{const count:number=result.count;const rows:Record<string,unknown>[]=result;void count;void rows;});
+  void nodePg.query<{id:number}>('select $1::int as id',[1]).then(result=>{const id:number=result.rows[0].id;const count:number|null=result.rowCount;void id;void count;});
+  void nodePg.query<{id:number}>({text:'select $1::int as id',values:[1],name:'typed-query'}).then(result=>{const id:number=result.rows[0].id;void id;});
+  void nodePg.query<[number]>({text:'select $1::int',values:[1],rowMode:'array'}).then(result=>{const id:number=result.rows[0][0];void id;});
+  void nodePg.savepoint(async tx=>{const result=await tx.query<{id:number}>('select 1 as id');return result.rows[0].id;});
+  void postgresJs\`select \${1} as id\`.then(result=>{const count:number=result.count;const rows:Record<string,unknown>[]=result;void count;void rows;});
+  void postgresJs.unsafe('select $1::int',[1]).execute().then(result=>{const count:number=result.count;void count;});
+  void postgresJs.savepoint(async tx=>{const result=await tx\`select \${1} as id\`;return result.count;});
+  const statement=sqlite.prepare('select ? as id');
+  const values:SQLInputValue[]=[1];
+  const rows:Record<string,SQLOutputValue>[]=statement.all(...values);
+  const row:Record<string,SQLOutputValue>|undefined=statement.get(...values);
+  const changed:StatementResultingChanges=sqlite.prepare('update todos set value=?').run('next');
+  const changedCount:number|bigint=changed.changes;const id:number|bigint=changed.lastInsertRowid;
+  void rows;void row;void changedCount;void id;
+  void sqlite.savepoint(async tx=>tx.prepare('select 1 as id').get());
 }
 void resultTypes;
 for (const path of ['@server-driven-impact/runtime/query','@server-driven-impact/postgres/dist/postgres/index.js','@server-driven-impact/core/contracts']) {
@@ -113,7 +129,7 @@ const manifests = {};
 let releaseVersion;
 for (const directory of packageDirectories) {
   const manifest = JSON.parse(await readFile(resolve(destination, 'node_modules/@server-driven-impact', directory.slice(4), 'package.json'), 'utf8'));
-  manifests[manifest.name] = { version: manifest.version, dependencies: manifest.dependencies ?? {}, peerDependencies: manifest.peerDependencies ?? {} };
+  manifests[manifest.name] = { version: manifest.version, dependencies: manifest.dependencies ?? {}, peerDependencies: manifest.peerDependencies ?? {}, peerDependenciesMeta: manifest.peerDependenciesMeta ?? {} };
   releaseVersion ??= manifest.version;
   if (manifest.version !== releaseVersion) throw new Error(`SDI_VERSION_MISMATCH:${manifest.name}:${manifest.version}:${releaseVersion}`);
 }
@@ -126,7 +142,25 @@ for (const adapter of ['@server-driven-impact/postgres', '@server-driven-impact/
   }
 }
 
-async function isolatedConsumer(name, dependencies, sourceFiles, execute) {
+const optionalOrmPeers = ['drizzle-orm', '@prisma/adapter-pg', '@prisma/driver-adapter-utils'];
+for (const peer of optionalOrmPeers) {
+  const postgresManifest = manifests['@server-driven-impact/postgres'];
+  if (!postgresManifest.peerDependencies[peer] || postgresManifest.peerDependenciesMeta[peer]?.optional !== true || peer in postgresManifest.dependencies) {
+    throw new Error(`ORM_PEER_MUST_BE_OPTIONAL:${peer}`);
+  }
+  for (const packageName of ['@server-driven-impact/core', '@server-driven-impact/runtime', '@server-driven-impact/sqlite']) {
+    if (peer in manifests[packageName].dependencies || peer in manifests[packageName].peerDependencies) throw new Error(`ORM_DEPENDENCY_LEAK:${packageName}:${peer}`);
+  }
+}
+async function assertNotInstalled(directory, packages) {
+  for (const packageName of packages) {
+    try { await access(resolve(directory, 'node_modules', packageName)); }
+    catch (error) { if (error?.code === 'ENOENT') continue; throw error; }
+    throw new Error(`UNEXPECTED_OPTIONAL_DEPENDENCY:${basename(directory)}:${packageName}`);
+  }
+}
+
+async function isolatedConsumer(name, dependencies, sourceFiles, execute, compilerOptions = {}) {
   const directory = await mkdtemp(resolve(tmpdir(), `sdi-${name}-`));
   const local = Object.fromEntries(Object.entries(dependencies).map(([packageName, version]) => [
     packageName,
@@ -142,21 +176,28 @@ async function isolatedConsumer(name, dependencies, sourceFiles, execute) {
     devDependencies: { '@types/node': '25.9.1', typescript: '6.0.3' }
   }));
   for (const [name, contents] of Object.entries(sourceFiles)) await writeFile(resolve(directory, name), contents);
-  await writeFile(resolve(directory, 'tsconfig.json'), JSON.stringify({ compilerOptions: { target: 'ES2022', module: 'NodeNext', moduleResolution: 'NodeNext', strict: true, types: ['node'], outDir: 'out' }, include: ['*.ts'] }));
+  await writeFile(resolve(directory, 'tsconfig.json'), JSON.stringify({ compilerOptions: { target: 'ES2022', module: 'NodeNext', moduleResolution: 'NodeNext', strict: true, types: ['node'], outDir: 'out', ...compilerOptions }, include: ['*.ts'] }));
   run('pnpm', ['install', '--prefer-offline', '--ignore-scripts', '--ignore-workspace'], directory);
   run('pnpm', ['exec', 'tsc', '-p', 'tsconfig.json'], directory);
   if (execute) console.log(run('node', [`out/${execute}`], directory).trim());
+  await assertNotInstalled(directory, optionalOrmPeers.filter(peer => !(peer in dependencies)));
   return directory;
 }
 
 await isolatedConsumer('core-only', { '@server-driven-impact/core': archives['sdi-core'] }, {
   'core.ts': `import {calculateImpact} from '@server-driven-impact/core'; if(typeof calculateImpact!=='function')throw new Error('CORE_IMPORT_FAILED'); console.log('core-only-ok');`
 }, 'core.js');
+await isolatedConsumer('runtime-only', {
+  '@server-driven-impact/core': archives['sdi-core'], '@server-driven-impact/runtime': archives['sdi-runtime']
+}, {
+  'runtime.ts': `import {createImpact,defineQueries} from '@server-driven-impact/runtime'; import {describeQueries} from '@server-driven-impact/runtime/debug'; for(const value of [createImpact,defineQueries,describeQueries])if(typeof value!=='function')throw new Error('RUNTIME_IMPORT_FAILED'); console.log('runtime-only-ok');`
+}, 'runtime.js');
 const sqliteOnly = await isolatedConsumer('sqlite-only', {
   '@server-driven-impact/core': archives['sdi-core'], '@server-driven-impact/runtime': archives['sdi-runtime'], '@server-driven-impact/sqlite': archives['sdi-sqlite']
 }, {
   'domain.ts': await readFile(resolve(root, 'examples/orders-impact/domain.ts'), 'utf8'),
-  'demo.ts': await readFile(resolve(root, 'examples/orders-impact/demo.ts'), 'utf8')
+  'demo.ts': await readFile(resolve(root, 'examples/orders-impact/demo.ts'), 'utf8'),
+  'native.ts': `import type {SqliteCommandDb} from '@server-driven-impact/sqlite'; import type {StatementResultingChanges,SQLOutputValue} from 'node:sqlite'; function types(db:SqliteCommandDb){const statement=db.prepare('select ? as id');const rows:Record<string,SQLOutputValue>[]=statement.all(1);const row:Record<string,SQLOutputValue>|undefined=statement.get(1);const result:StatementResultingChanges=statement.run(1);void rows;void row;void result;} void types;`
 }, 'demo.js');
 try { await access(resolve(sqliteOnly, 'node_modules/@pgsql/parser')); throw new Error('SQLITE_INSTALLED_POSTGRES_PARSER'); }
 catch (error) { if (error?.code !== 'ENOENT') throw error; }
@@ -164,13 +205,58 @@ catch (error) { if (error?.code !== 'ENOENT') throw error; }
 await isolatedConsumer('postgres-js-only', {
   '@server-driven-impact/core': archives['sdi-core'], '@server-driven-impact/runtime': archives['sdi-runtime'], '@server-driven-impact/postgres': archives['sdi-postgres'], postgres: '3.4.8'
 }, {
-  'driver.ts': `import postgres from 'postgres'; import {postgresAdapter} from '@server-driven-impact/postgres'; const database=postgres('postgresql://localhost/test',{max:1}); postgresAdapter({database}); await database.end(); console.log('postgres-js-only-ok');`
+  'driver.ts': `import postgres from 'postgres'; import {postgresAdapter,type PostgresCommandDb} from '@server-driven-impact/postgres'; function types(db:PostgresCommandDb){void db\`select \${1} as id\`.then(rows=>{const count:number=rows.count;void count;});void db.unsafe('select $1::int',[1]).execute();} void types; const database=postgres('postgresql://localhost/test',{max:1}); postgresAdapter({database}); await database.end(); console.log('postgres-js-only-ok');`
 }, 'driver.js');
 await isolatedConsumer('pg-only', {
   '@server-driven-impact/core': archives['sdi-core'], '@server-driven-impact/runtime': archives['sdi-runtime'], '@server-driven-impact/postgres': archives['sdi-postgres'], pg: '8.16.3', '@types/pg': '8.15.5'
 }, {
-  'driver.ts': `import {Pool} from 'pg'; import {pgAdapter} from '@server-driven-impact/postgres/pg'; const database=new Pool({connectionString:'postgresql://localhost/test'}); pgAdapter({database}); await database.end(); console.log('pg-only-ok');`
+  'driver.ts': `import {Pool} from 'pg'; import {pgAdapter,type PgCommandDb} from '@server-driven-impact/postgres/pg'; function types(db:PgCommandDb){void db.query<{id:number}>('select $1::int as id',[1]).then(result=>{const id:number=result.rows[0].id;void id;});void db.query<[number]>({text:'select $1::int',values:[1],rowMode:'array'}).then(result=>{const id:number=result.rows[0][0];void id;});} void types; const database=new Pool({connectionString:'postgresql://localhost/test'}); pgAdapter({database}); await database.end(); console.log('pg-only-ok');`
 }, 'driver.js');
+
+// Drizzle 0.45.2 declarations reference unrelated optional database drivers and
+// contain upstream TS6 declaration errors. Keep consumer source strict, while
+// skipping that dependency's declaration checking only in this ORM consumer.
+await isolatedConsumer('drizzle-pg-only', {
+  '@server-driven-impact/core': archives['sdi-core'], '@server-driven-impact/runtime': archives['sdi-runtime'], '@server-driven-impact/postgres': archives['sdi-postgres'],
+  pg: '8.16.3', '@types/pg': '8.15.5', 'drizzle-orm': '0.45.2'
+}, {
+  'drizzle.ts': `import {Pool} from 'pg';
+import {pgTable,text} from 'drizzle-orm/pg-core';
+import {drizzleAdapter,type DrizzleCommandDb} from '@server-driven-impact/postgres/drizzle';
+import type {ImpactAdapter} from '@server-driven-impact/runtime/adapter';
+const todos=pgTable('todos',{id:text('id').primaryKey(),value:text('value').notNull()});
+const database=new Pool({connectionString:'postgresql://localhost/test'});
+const adapter:ImpactAdapter<DrizzleCommandDb<{todos:typeof todos}>>=drizzleAdapter({database,drizzle:{schema:{todos}}});
+function types(db:DrizzleCommandDb<{todos:typeof todos}>) {
+  const insert:PromiseLike<{id:string}[]>=db.insert(todos).values({id:'one',value:'value'}).returning({id:todos.id});
+  void db.query.todos.findMany().then(rows=>{const id:string=rows[0].id;const value:string=rows[0].value;void id;void value;});
+  const transaction:Promise<string>=db.transaction(async tx=>{const rows=await tx.select({id:todos.id}).from(todos);return rows[0].id;});
+  const savepoint:Promise<{id:string}[]>=db.savepoint(async tx=>await tx.insert(todos).values({id:'two',value:'next'}).returning({id:todos.id}));
+  // @ts-expect-error Model field types must remain specific across the adapter boundary.
+  db.insert(todos).values({id:123,value:'invalid'});
+  void insert;void transaction;void savepoint;
+}
+void adapter;void types;await database.end();console.log('drizzle-pg-only-ok');`
+}, 'drizzle.js', {skipLibCheck:true});
+await isolatedConsumer('prisma-pg-only', {
+  '@server-driven-impact/core': archives['sdi-core'], '@server-driven-impact/runtime': archives['sdi-runtime'], '@server-driven-impact/postgres': archives['sdi-postgres'],
+  pg: '8.16.3', '@types/pg': '8.15.5', '@prisma/adapter-pg': '7.10.0', '@prisma/driver-adapter-utils': '7.10.0'
+}, {
+  'prisma.ts': `import {Pool} from 'pg';
+import type {SqlDriverAdapterFactory} from '@prisma/driver-adapter-utils';
+import {prismaAdapter,type PrismaOptions} from '@server-driven-impact/postgres/prisma';
+import type {ImpactAdapter} from '@server-driven-impact/runtime/adapter';
+// Generated clients are application-owned. This structural client checks the public
+// factory contract without installing a generator or generating application models.
+interface Client { $disconnect():Promise<void>; todos:{findUnique(args:{where:{id:string}}):Promise<{id:string}>} }
+const database=new Pool({connectionString:'postgresql://localhost/test'});
+const options:PrismaOptions<Client>={database,createClient(factory){
+  const driver:SqlDriverAdapterFactory=factory;void driver;
+  return {$disconnect:async()=>{},todos:{findUnique:async args=>({id:args.where.id})}};
+}};
+const adapter:ImpactAdapter<Client>=prismaAdapter(options);
+void adapter;await database.end();console.log('prisma-pg-only-ok');`
+}, 'prisma.js');
 
 const integrity = Object.fromEntries(await Promise.all(Object.entries(archives).map(async ([directory, filename]) => {
   const contents = await readFile(resolve(artifactDirectory, filename));

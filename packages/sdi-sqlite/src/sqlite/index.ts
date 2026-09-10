@@ -1,4 +1,4 @@
-import type { DatabaseSync, SQLInputValue } from 'node:sqlite';
+import type { DatabaseSync, SQLInputValue, StatementSync } from 'node:sqlite';
 import type { WriteSet } from '@server-driven-impact/core';
 import { LIMITS, canonical, isScalar, type Scalar, type WriteFact, type RowState } from '@server-driven-impact/core';
 import { bindAdapter, identityColumns, type ImpactAdapter, type QueryManifest, type Resources, type SelectExecutor } from '@server-driven-impact/runtime/adapter';
@@ -9,7 +9,9 @@ import { createHash } from 'node:crypto';
 import { ImpactUnavailableError } from '@server-driven-impact/runtime/adapter';
 
 export type DataRow = Record<string, unknown>;
+export type SqliteStatement = Pick<StatementSync, 'all' | 'get' | 'run'>;
 export interface SqliteCommandDb {
+  prepare(text: string): SqliteStatement;
   /** Execute one trusted native SQLite statement on the owned transaction. */
   execute(text: string, values?: readonly SQLInputValue[]): Promise<DataRow[]>;
   savepoint<T>(work: (db: SqliteCommandDb) => Promise<T>): Promise<T>;
@@ -82,30 +84,34 @@ function validateCatalog(database: DatabaseSync, resources: Resources): void {
 
 const collectorTable='sdi_observed_facts';
 const collectorResources='sdi_observed_resources';
+const activeObservers = new WeakMap<DatabaseSync, {key: string; triggers: string[]}>();
 function triggerName(resource:string,operation:string) {
   return `sdi_${createHash('sha256').update(resource).digest('hex').slice(0,12)}_${operation}`;
 }
 function quoted(value:string) { return "'"+value.replaceAll("'","''")+"'"; }
-function stateSql(alias:'old'|'new',resource:Resources[string],fields:readonly string[]) {
+function stateSql(alias:'old'|'new',resource:Resources[string],fields:readonly string[],filterColumns:readonly string[]) {
   const scope=resource.scopeColumn===null?'null':`${alias}.${ident(resource.scopeColumn)}`;
   const values=fields.flatMap(field=>[quoted(field),`${alias}.${ident(field)}`]).join(',');
-  return `json_object('kind','known','scope',${scope},'fields',json_object(${values}))`;
+  const equality = filterColumns.flatMap(field=>[quoted(field),`${alias}.${ident(field)}`]).join(',');
+  return `json_object('kind','known','scope',${scope},'fields',json_object(${values})${equality ? `,'equalityFields',json_object(${equality})` : ''})`;
 }
 function installObservers(database:DatabaseSync,resources:Resources,manifest:QueryManifest) {
+  for (const name of activeObservers.get(database)?.triggers ?? []) database.exec(`drop trigger if exists temp.${ident(name)}`);
   database.exec(`create temp table if not exists ${ident(collectorTable)}(
     resource text not null,operation text not null,before_state text not null,after_state text not null,changed_columns text
-  );create temp table if not exists ${ident(collectorResources)}(resource text primary key)`);
+  );create temp table if not exists ${ident(collectorResources)}(resource text primary key, widened integer not null default 0)`);
   for(const [resourceId,resource] of Object.entries(resources)) {
+    const filterColumns=[...new Set(Object.values(manifest.reads).flat().filter(read=>read.resource===resourceId).flatMap(read=>(read.filters ?? []).map(filter=>filter.column)))];
     const fields=[...new Set([
       ...(resource.scopeColumn===null?[]:[resource.scopeColumn]),
       ...identityColumns(resource),
-      ...Object.values(manifest.reads).flat().filter(read=>read.resource===resourceId).flatMap(read=>read.bindings.map(binding=>binding.column)),
+      ...Object.values(manifest.reads).flat().filter(read=>read.resource===resourceId).flatMap(read=>[...read.bindings.map(binding=>binding.column), ...(read.filters ?? []).map(filter=>filter.column)]),
     ])].sort();
     for(const operation of ['insert','update','delete'] as const) {
       const name=ident(triggerName(resourceId,operation));
       database.exec(`drop trigger if exists temp.${name}`);
-      const before=operation==='insert'?quoted(JSON.stringify({kind:'absent'})):stateSql('old',resource,fields);
-      const after=operation==='delete'?quoted(JSON.stringify({kind:'absent'})):stateSql('new',resource,fields);
+      const before=operation==='insert'?quoted(JSON.stringify({kind:'absent'})):stateSql('old',resource,fields,filterColumns);
+      const after=operation==='delete'?quoted(JSON.stringify({kind:'absent'})):stateSql('new',resource,fields,filterColumns);
       const differs=(column:string)=>`quote(old.${ident(column)}) collate binary is not quote(new.${ident(column)}) collate binary`;
       const changed=operation==='update'
         ? `json_object(${resource.columns.flatMap(column=>[quoted(column),differs(column)]).join(',')})`
@@ -115,20 +121,25 @@ function installObservers(database:DatabaseSync,resources:Resources,manifest:Que
         insert or ignore into ${ident(collectorResources)}(resource) values(${quoted(resourceId)});
         insert into ${ident(collectorTable)}(resource,operation,before_state,after_state,changed_columns)
           select ${quoted(resourceId)},${quoted(operation)},${before},${after},${changed}
-          where (select count(*) from ${ident(collectorTable)})<${LIMITS.facts+1};
+          where (select widened from ${ident(collectorResources)} where resource=${quoted(resourceId)})=0;
+        update ${ident(collectorResources)} set widened=1 where resource=(
+          select resource from ${ident(collectorTable)} group by resource
+          order by sum(length(cast(before_state as blob))+length(cast(after_state as blob))+coalesce(length(cast(changed_columns as blob)),0)) desc limit 1
+        ) and (
+          (select count(*) from ${ident(collectorTable)})>${LIMITS.facts}
+          or (select coalesce(sum(length(cast(before_state as blob))+length(cast(after_state as blob))+coalesce(length(cast(changed_columns as blob)),0)),0) from ${ident(collectorTable)})>${LIMITS.factBytes}
+        );
+        delete from ${ident(collectorTable)} where resource in (select resource from ${ident(collectorResources)} where widened=1);
       end`);
     }
   }
 }
 function observedFacts(database:DatabaseSync):WriteFact[] {
-  const stats=database.prepare(`select count(*) as count,coalesce(sum(length(resource)+length(operation)+length(before_state)+length(after_state)+coalesce(length(changed_columns),0)),0) as bytes from ${ident(collectorTable)}`).get();
-  if(Number(stats?.count)>LIMITS.facts || Number(stats?.bytes)>LIMITS.factBytes) {
-    return database.prepare(`select resource from ${ident(collectorResources)} order by resource`).all().map(row=>({
-      resource:String(row.resource),operation:'unknown',before:{kind:'unknown'},after:{kind:'unknown'},changedColumns:null,
-    }));
-  }
+  const broad: WriteFact[] = database.prepare(`select resource from ${ident(collectorResources)} where widened=1 order by resource`).all().map(row=>({
+    resource:String(row.resource),operation:'unknown',before:{kind:'unknown'},after:{kind:'unknown'},changedColumns:null,
+  }));
   const rows=database.prepare(`select resource,operation,before_state,after_state,changed_columns from ${ident(collectorTable)}`).all();
-  return rows.map(row=>{
+  return [...broad, ...rows.map(row=>{
     const parseState=(value:unknown):RowState=>{
       try {
         const parsed=JSON.parse(String(value)) as RowState;
@@ -143,17 +154,18 @@ function observedFacts(database:DatabaseSync):WriteFact[] {
       if(changed && typeof changed==='object' && !Array.isArray(changed))changedColumns=Object.entries(changed).filter(([,value])=>value===1 || value===true).map(([column])=>column);
     } catch {}
     return {resource:String(row.resource),operation:row.operation as WriteFact['operation'],before:parseState(row.before_state),after:parseState(row.after_state),changedColumns};
-  });
+  })];
 }
 function assertNativeStatement(text:string) {
   if(!text.trim() || text.includes('\0'))throw new Error('SQLITE_SINGLE_STATEMENT_REQUIRED');
   let tokens:string[];
   try{tokens=sqlTokens(text,true);}catch(error){if(error instanceof Error&&error.message==='SQLITE_SINGLE_STATEMENT_REQUIRED')throw error;throw new Error('SQLITE_SINGLE_STATEMENT_REQUIRED',{cause:error});}
   if(!tokens.length)throw new Error('SQLITE_SINGLE_STATEMENT_REQUIRED');
+  if(tokens.some(token => [collectorTable.toUpperCase(), collectorResources.toUpperCase()].includes(token))) throw new Error('SQLITE_OBSERVER_ACCESS_FORBIDDEN');
   if(['BEGIN','COMMIT','END','ROLLBACK','SAVEPOINT','RELEASE','ATTACH','DETACH','PRAGMA','VACUUM','CREATE','ALTER','DROP'].includes(tokens[0]))throw new Error('SQLITE_TRANSACTION_OR_DDL_FORBIDDEN');
   // SQLite may omit DELETE triggers for REPLACE unless recursive_triggers is on.
   // Reject it instead of silently losing the OLD selector membership.
-  if(tokens[0]==='REPLACE' || tokens.some((token,index)=>token==='INSERT'&&tokens[index+1]==='OR'&&tokens[index+2]==='REPLACE'))throw new Error('SQLITE_REPLACE_UNSUPPORTED');
+  if(tokens[0]==='REPLACE' || tokens.some((token,index)=>['INSERT','UPDATE'].includes(token)&&tokens[index+1]==='OR'&&tokens[index+2]==='REPLACE'))throw new Error('SQLITE_REPLACE_UNSUPPORTED');
 }
 
 export function sqliteAdapter(options: SqliteOptions): ImpactAdapter<SqliteCommandDb> {
@@ -161,12 +173,17 @@ export function sqliteAdapter(options: SqliteOptions): ImpactAdapter<SqliteComma
   if (!database || typeof database.prepare !== 'function') throw new Error('SQLITE_CONNECTION_REQUIRED');
   return Object.freeze({
     [bindAdapter](resources: Resources, manifest: QueryManifest) {
-      let prepared=false;
-      const prepare = () => { if(!prepared) { installObservers(database,resources,manifest);prepared=true; } };
+      let comparisonsValidated = false;
+      const key = canonical({resources, reads: manifest.reads});
+      const prepare = (force = false) => {
+        if (!force && activeObservers.get(database)?.key === key) return;
+        installObservers(database, resources, manifest);
+        activeObservers.set(database, {key, triggers: Object.keys(resources).flatMap(id => ['insert','update','delete'].map(op => triggerName(id,op)))});
+      };
       const validate = () => serial(database,async()=>{
         validateCatalog(database,resources);
-        installObservers(database,resources,manifest);
-        prepared=true;
+        prepare(true);
+        comparisonsValidated = true;
       });
       const select: SelectExecutor = async (plan, input: Input) => {
         if (plan.kind !== 'select') throw new Error('POSTGRES_QUERY_REQUIRES_POSTGRES_ADAPTER');
@@ -176,6 +193,11 @@ export function sqliteAdapter(options: SqliteOptions): ImpactAdapter<SqliteComma
       function dbFor(): SqliteCommandDb {
         let savepointId = 0;
         const db: SqliteCommandDb = {
+          prepare(text) {
+            assertNativeStatement(text);
+            const statement = database.prepare(text);
+            return {all: statement.all.bind(statement), get: statement.get.bind(statement), run: statement.run.bind(statement)};
+          },
           async execute(text,values=[]) {
             assertNativeStatement(text);
             return database.prepare(text).all(...values) as DataRow[];
@@ -218,11 +240,14 @@ export function sqliteAdapter(options: SqliteOptions): ImpactAdapter<SqliteComma
           let committed=false;
           let data!:T;
           try {
-            const guarded=guardDatabase(dbFor());
+            const guarded=guardDatabase(dbFor(), {syncFactories: new Set(['prepare']), syncMethods: new Set(['all','get','run'])});
             try { data=await work(guarded.db);guarded.finish(); }
             finally { guarded.close();await guarded.settle(); }
             database.exec('commit');committed=true;
-            try { writes.add(observedFacts(database));database.exec(`delete from ${ident(collectorTable)};delete from ${ident(collectorResources)}`); }
+            try {
+              const facts = observedFacts(database);
+              if (!comparisonsValidated) for (const fact of facts) for (const row of [fact.before,fact.after]) if (row.kind === 'known') delete row.equalityFields;
+              writes.add(facts);database.exec(`delete from ${ident(collectorTable)};delete from ${ident(collectorResources)}`); }
             catch(cause) { throw new ImpactUnavailableError(data,{cause}); }
             return data;
           } catch(error) {

@@ -35,7 +35,7 @@ describe('unified API / actual SQLite', () => {
   it('exposes only the native transaction operations', async () => {
     const { engine } = fixture();
     await engine.command(context, async db => {
-      expect(Object.keys(db).sort()).toEqual(['execute', 'savepoint']);
+      expect(Object.keys(db).sort()).toEqual(['execute', 'prepare', 'savepoint']);
       expect(db).not.toHaveProperty('insert');
       expect(db).not.toHaveProperty('sqlite');
     });

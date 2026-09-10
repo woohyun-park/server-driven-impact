@@ -41,3 +41,5 @@ For diagnostics, `createImpact({ resources, manifest })` creates a reusable calc
 Consumers should use `matchesInputSelector()` for protocol-1 matching. It treats exact JSON scalar equality as a match and conservatively covers finite numeric string coercion and SQLite's built-in `NOCASE` and `RTRIM` behavior.
 
 Node.js 22.18 or newer is required.
+
+WriteSet compacts overflowing resources locally and retains bounded common OLD/NEW scope and fields. Selector count overflow keeps shared constraints; byte overflow widens individual targets. `createImpact().command()` calculates after adapter COMMIT/drain and classifies post-commit calculation failures as `ImpactUnavailableError`. [Protocol semantics](../../spec/server-driven-impact/semantics.md).

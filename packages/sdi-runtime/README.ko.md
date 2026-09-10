@@ -92,3 +92,5 @@ Command는 커밋 뒤 `{ data, impact }`를 반환합니다. 애플리케이션�
 `engine.query()`는 등록된 캐시 가능 plan을 실행합니다. PostgreSQL에서 `no-store`로 컴파일된 plan은 `engine.queryUncached()`로 실행하며 `{ data, cachePolicy: 'no-store' }`를 반환합니다.
 
 adapter 작성자는 `@server-driven-impact/runtime/adapter`의 안정된 계약을 사용합니다. Query graph 진단 도구는 `@server-driven-impact/runtime/debug`에서 제공합니다. Node.js 22.18 이상이 필요합니다.
+
+mutation 계약은 커밋된 변경의 WriteSet 자동 수집, 누락 없는 정밀 ImpactSet 계산, `{ data, impact }` 반환까지입니다. Native·ORM client는 각 도구의 실행 의미를 보존하며 Query 의존성 등록은 계속 필요합니다. [0.4 지원 범위와 이전](../../docs/migrations/transaction-impact-0.4.md).

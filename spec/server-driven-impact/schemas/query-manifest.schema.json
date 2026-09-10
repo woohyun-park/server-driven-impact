@@ -47,6 +47,31 @@
                 ],
                 "additionalProperties": false
               }
+            },
+            "filters": {
+              "type": "array",
+              "maxItems": 100,
+              "items": {
+                "type": "object",
+                "properties": {
+                  "column": {
+                    "type": "string"
+                  },
+                  "value": {
+                    "type": [
+                      "string",
+                      "number",
+                      "boolean",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "column",
+                  "value"
+                ],
+                "additionalProperties": false
+              }
             }
           },
           "required": [

@@ -16,7 +16,7 @@ export interface PostgresQuerySource {
 }
 
 type Json=Record<string,any>;
-type DirectRelation={resource:string;alias:string};
+type DirectRelation={resource:string;alias:string;pruneColumns:boolean};
 type Binding={alias?:string;column:string;parameter:number};
 
 function node(value: unknown,kind:string): Json|undefined {
@@ -140,7 +140,7 @@ export async function compilePostgresQuery(source: PostgresQuerySource, resource
         for(const resource of resolved.resources)if(resource!==resolved.direct)reads.push({resource,columns:'*',bindings:[]});
         if(!resolved.direct)return;
       }
-      relations.push({resource:resourceFor(range),alias:aliasOf(range)}); return;
+      relations.push({resource:resourceFor(range),alias:aliasOf(range),pruneColumns:options.catalog?.canPruneColumns?.(relationReference(range)) === true}); return;
     }
     const join=node(value,'JoinExpr');
     if (join) { direct(join.larg,ctes,relations);direct(join.rarg,ctes,relations); }
@@ -181,6 +181,31 @@ export async function compilePostgresQuery(source: PostgresQuerySource, resource
     }
     const binding=atomic(value); return binding ? [binding] : [];
   }
+  function observedColumns(select:Json,relations:DirectRelation[]):Map<DirectRelation,Set<string>>|undefined {
+    const observed=new Map(relations.map(relation=>[relation,new Set<string>()]));
+    let complete=true;
+    function inspect(value:unknown):void {
+      if(Array.isArray(value)){value.forEach(inspect);return;}
+      if(!value || typeof value!=='object')return;
+      // Correlation, whole-row expressions, implicit USING/NATURAL columns and
+      // unresolved aliases need broader analysis. Preserve all columns rather
+      // than mistaking an incomplete syntactic read list for a proof.
+      if(node(value,'SelectStmt')){complete=false;return;}
+      const join=node(value,'JoinExpr');
+      if(join && (join.isNatural || join.usingClause?.length)){complete=false;return;}
+      if(node(value,'ColumnRef')){
+        const reference=column(value);
+        if(!reference){complete=false;return;}
+        const owners=relations.filter(relation=>(!reference.alias || reference.alias===relation.alias) && resources[relation.resource].columns.includes(reference.column));
+        if(owners.length!==1){complete=false;return;}
+        observed.get(owners[0])!.add(reference.column);
+        return;
+      }
+      Object.values(value).forEach(inspect);
+    }
+    Object.values(select).forEach(inspect);
+    return complete ? observed : undefined;
+  }
   function nested(value:unknown,ctes:Set<string>):void {
     if (Array.isArray(value)) { for (const item of value) nested(item,ctes); return; }
     if (!value || typeof value!=='object') return;
@@ -206,6 +231,7 @@ export async function compilePostgresQuery(source: PostgresQuerySource, resource
     const aliases=new Map<string,DirectRelation[]>();
     for (const relation of relations) aliases.set(relation.alias,[...(aliases.get(relation.alias) ?? []),relation]);
     const bindings=guaranteed(select.whereClause);
+    const observed=observedColumns(select,relations);
     for (const relation of relations) {
       const resource=resources[relation.resource];
       const resolved=bindings.flatMap(binding=>{
@@ -218,7 +244,7 @@ export async function compilePostgresQuery(source: PostgresQuerySource, resource
         }
         return [{column:binding.column,input:parameters[binding.parameter-1]}];
       });
-      reads.push({resource:relation.resource,columns:'*',bindings:[...new Map(resolved.map(binding=>[canonical(binding),binding])).values()]});
+      reads.push({resource:relation.resource,columns:relation.pruneColumns && observed ? [...observed.get(relation)!].sort() : '*',bindings:[...new Map(resolved.map(binding=>[canonical(binding),binding])).values()]});
     }
     for (const [key,value] of Object.entries(select)) if (!['fromClause','whereClause','withClause'].includes(key)) nested(value,ctes);
     for (const entry of select.fromClause ?? []) nested(entry,ctes);

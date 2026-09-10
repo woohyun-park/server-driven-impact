@@ -1,0 +1,67 @@
+{
+  "resources": {
+    "records": {
+      "scopeColumn": null,
+      "columns": [
+        "id",
+        "status",
+        "customer"
+      ]
+    }
+  },
+  "manifest": {
+    "protocolVersion": 1,
+    "reads": {
+      "ready": [
+        {
+          "resource": "records",
+          "columns": [
+            "id",
+            "status",
+            "customer"
+          ],
+          "bindings": [
+            {
+              "column": "customer",
+              "input": "customer"
+            }
+          ],
+          "filters": [
+            {
+              "column": "status",
+              "value": "ready"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "scope": null,
+  "writes": [
+    {
+      "resource": "records",
+      "operation": "insert",
+      "before": {
+        "kind": "absent"
+      },
+      "after": {
+        "kind": "known",
+        "scope": null,
+        "fields": {
+          "customer": "a"
+        },
+        "equalityFields": {
+          "status": "draft"
+        }
+      },
+      "changedColumns": null
+    }
+  ],
+  "impact": {
+    "protocolVersion": 1,
+    "targets": []
+  },
+  "reasons": [
+    "filter-excluded"
+  ]
+}

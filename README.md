@@ -4,6 +4,10 @@
 
 Server-Driven Impact (SDI) is a backend library that calculates which registered query results may be stale after a database command.
 
+SDI aims to automatically collect a mutation's direct and indirect committed database effects into a WriteSet, derive the affected queries and inputs, and return the narrowest safely supported `{ data, impact }` response to the frontend without missing affected results. Applications register Resources and Queries; mutations do not manually report writes or enumerate invalidations. Conservative widening is a fallback when the available evidence cannot justify narrower impact.
+
+Execution paths include pg, postgres.js, SQLite, and optional Drizzle 0.45.2 + pg and Prisma 7.10.0 + pg adapters. See the [0.4 migration and support guide](./docs/migrations/transaction-impact-0.4.md) and [automatic analysis boundaries](./docs/research/query-automation-boundaries.md).
+
 Suppose an order moves from customer `old` to customer `new`. The detail query for that order and both customer lists may now be stale. SDI observes the committed write and returns that relationship as data:
 
 ```json

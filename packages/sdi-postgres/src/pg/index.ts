@@ -1,10 +1,10 @@
-import type { Pool, PoolClient, QueryResult } from 'pg';
+import type { Pool, PoolClient, QueryResult, QueryConfig, QueryArrayConfig, QueryArrayResult, QueryResultRow } from 'pg';
 import { createRequire } from 'node:module';
 import { randomUUID } from 'node:crypto';
 import type { Scalar } from '@server-driven-impact/core';
 import type { ImpactAdapter } from '@server-driven-impact/runtime/adapter';
 import { postgresAdapter } from '../postgres/index.js';
-import { executeDriver } from '../postgres/driver-execution.js';
+import { executeDriver, type DriverQueryOptions } from '../postgres/driver-execution.js';
 import type { Sql } from '../postgres/sql.js';
 import type { PostgresSetupTransaction } from '../postgres/public-types.js';
 
@@ -12,9 +12,13 @@ const require = createRequire(import.meta.url);
 export type PgTransaction = PostgresSetupTransaction;
 export type PgRow = Record<string, unknown>;
 export type PgExecuteResult = QueryResult<PgRow>;
+export type PgQueryConfig = Pick<QueryConfig, 'text' | 'values' | 'name' | 'types'>;
+export type PgArrayQueryConfig = PgQueryConfig & {rowMode: 'array'};
 export interface PgCommandDb {
   readonly scope: Scalar;
   execute(statement: Sql): Promise<PgExecuteResult>;
+  query<R extends any[] = any[]>(config: PgArrayQueryConfig, values?: unknown[]): Promise<QueryArrayResult<R>>;
+  query<R extends QueryResultRow = PgRow>(query: string | PgQueryConfig, values?: unknown[]): Promise<QueryResult<R>>;
   copyFrom(statement: Sql, source: AsyncIterable<Uint8Array|string> | Iterable<Uint8Array|string>): Promise<void>;
   copyTo(statement: Sql): AsyncIterable<Uint8Array>;
   cursor(statement: Sql, batchSize?: number): AsyncIterable<PgRow[]>;
@@ -70,7 +74,7 @@ export function pgDatabase(pool: Pool) {
     let released=false;
     return {
       unsafe: ((text:string,values?:unknown[])=>unsafe(client,text,values)) as unknown as PgTransaction['unsafe'],
-      [executeDriver]: (text:string,values:readonly unknown[]) => client.query<PgRow>(text,[...values]),
+      [executeDriver]: (text:string,values:readonly unknown[],options?:DriverQueryOptions) => client.query({text,values:[...values],name:options?.name,rowMode:options?.rowMode,types:options?.types as QueryConfig['types']} as QueryConfig),
       release() { if(!released){released=true;client.release();} },
       discard() { if(!released){released=true;client.release(true);} },
     };
