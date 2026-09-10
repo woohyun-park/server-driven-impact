@@ -23,7 +23,7 @@ async function insert(db:SqliteCommandDb,table:string,rows:Record<string,unknown
   if(!rows.length)return [];
   const names=Object.keys(rows[0]);
   const values=rows.flatMap(row=>names.map(name=>row[name] as null|string|number));
-  const tuples=rows.map((_,row)=>`(${names.map((__,column)=>`?${row*names.length+column+1}`).join(',')})`).join(',');
+  const tuples=rows.map(()=>`(${names.map(()=>'?').join(',')})`).join(',');
   return db.execute(`insert into ${table}(${names.join(',')}) values ${tuples}${returning?' returning *':''}`,values);
 }
 const update=(db:SqliteCommandDb,table:string,set:string,where:string,values:readonly (null|string|number)[]=[])=>db.execute(`update ${table} set ${set} where ${where} returning *`,values);
@@ -48,13 +48,13 @@ describe('unified API / actual SQLite', () => {
     expect(inserted).not.toHaveProperty('affected');
     expect(inserted.data).toEqual([]);
     expect(includes(inserted.impact, 'orders.list', { customer: 'first' })).toBe(true);
-    const moved = await engine.command(context, db => update(db,'orders','customer_id=?1','id=?2',['second','one']));
+    const moved = await engine.command(context, db => update(db,'orders','customer_id=?','id=?',['second','one']));
     for (const customer of ['first', 'second']) expect(includes(moved.impact, 'orders.list', { customer })).toBe(true);
     const item = await engine.command(context, db => insert(db,'order_items',[{ id: 'item', tenant_id: 'a', order_id: 'one', amount: 42 }]));
     expect(includes(item.impact, 'orders.detail', { id: 'one' })).toBe(true);
     expect(await engine.query('orders.total', { id: 'one' }, context)).toBe(42);
     expect(await engine.query('orders.detail', { id: 'one' }, context)).toMatchObject([{ id: 'one', items: [{ amount: 42 }] }]);
-    const deleted = await engine.command(context, db => remove(db,'orders','id=?1',['one']));
+    const deleted = await engine.command(context, db => remove(db,'orders','id=?',['one']));
     expect(includes(deleted.impact, 'orders.total', { id: 'one' })).toBe(true);
     expect(await engine.query('orders.total', { id: 'one' }, context)).toBe(0);
   });
@@ -73,9 +73,9 @@ describe('unified API / actual SQLite', () => {
       return db.savepoint(child => insert(child,'orders',[order('kept', 'kept')]));
     });
     expect(JSON.stringify(result.impact)).not.toContain('discarded');
-    expect((await engine.command(context, db => update(db,'orders','status=?1','id=?2',['draft','missing']))).impact.targets).toEqual([]);
-    expect((await engine.command(context, db => update(db,'orders','status=?1','id=?2',['ready','kept']))).impact.targets).toEqual([]);
-    expect((await engine.command(context, db => update(db,'orders','note=?1','id=?2',['private','kept']))).impact.targets.map(t => t.endpoint)).toEqual(['orders.detail']);
+    expect((await engine.command(context, db => update(db,'orders','status=?','id=?',['draft','missing']))).impact.targets).toEqual([]);
+    expect((await engine.command(context, db => update(db,'orders','status=?','id=?',['ready','kept']))).impact.targets).toEqual([]);
+    expect((await engine.command(context, db => update(db,'orders','note=?','id=?',['private','kept']))).impact.targets.map(t => t.endpoint)).toEqual(['orders.detail']);
   });
   it('commit failure publishes no result, and a caught failed write cannot commit earlier writes', async () => {
     const { engine, database } = fixture();
@@ -114,11 +114,11 @@ describe('unified API / actual SQLite', () => {
   it('bounds bulk facts and keeps OLD/NEW nullable selector membership', async () => {
     const { engine } = fixture();
     await engine.command(context, db => insert(db,'orders',[{ ...order('nullable'), customer_id: null }]));
-    const moved = await engine.command(context, db => update(db,'orders','customer_id=?1','customer_id is null',['new']));
+    const moved = await engine.command(context, db => update(db,'orders','customer_id=?','customer_id is null',['new']));
     expect(includes(moved.impact, 'orders.list', { customer: null })).toBe(true);
     expect(includes(moved.impact, 'orders.list', { customer: 'new' })).toBe(true);
     await engine.command(context, db => insert(db,'orders',Array.from({ length: 210 }, (_, i) => order('bulk' + i))));
-    const bulk = await engine.command(context, db => update(db,'orders','status=?1','true',['draft']));
+    const bulk = await engine.command(context, db => update(db,'orders','status=?','true',['draft']));
     expect(bulk.data).toHaveLength(211);
     expect(bulk.impact.targets.every(t => t.selector.kind === 'all')).toBe(true);
   });
@@ -178,7 +178,7 @@ describe('unified API / actual SQLite', () => {
     await expect(engine.query('unknown', {}, context)).rejects.toThrow('UNKNOWN_QUERY');
     await engine.command(context, db => insert(db,'orders',[order('injection', "'; delete from orders; --")]));
     expect(await engine.query('orders.list', { customer: "'; delete from orders; --" }, context)).toHaveLength(1);
-    await expect(engine.command(context, db => db.execute('update orders set status=?1 where id=?2; drop table orders',['bad','x']))).rejects.toThrow('SQLITE_SINGLE_STATEMENT_REQUIRED');
+    await expect(engine.command(context, db => db.execute('update orders set status=? where id=?; drop table orders',['bad','x']))).rejects.toThrow('SQLITE_SINGLE_STATEMENT_REQUIRED');
   });
   it('observes native SQLite DML and writes performed by business triggers', async () => {
     const { database, adapter, resources, queries } = fixture();
@@ -219,7 +219,7 @@ describe('unified API / actual SQLite', () => {
     const inserted=await engine.command(context,db=>insert(db,'values_table',[{id:'one',tenant:'a',number_value:1,label:'work'}]));
     expect(includes(inserted.impact,'number',{value:'1'})).toBe(true);
     expect(includes(inserted.impact,'label',{value:'WORK'})).toBe(true);
-    const changed=await engine.command(context,db=>update(db,'values_table','label=?1','id=?2',['WORK','one']));
+    const changed=await engine.command(context,db=>update(db,'values_table','label=?','id=?',['WORK','one']));
     expect(changed.impact.targets.map(target=>target.endpoint)).toContain('label');
   });
   it('rejects schema-level REPLACE policies that can hide the deleted row',async()=>{

@@ -72,7 +72,7 @@ await engine.validate();
 
 const context = { scope: 'account-a' };
 const result = await engine.command(context, db => db.execute(
-  'insert into todos(id, account_id, status) values(?1, ?2, ?3)',
+  'insert into todos(id, account_id, status) values(?, ?, ?)',
   ['todo-1', 'account-a', 'open'],
 ));
 

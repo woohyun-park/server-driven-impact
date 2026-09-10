@@ -20,7 +20,7 @@ async function insert(dialect: 'sqlite'|'postgres', schema: string, db: TestDb, 
   const names = Object.keys(rows[0]);
   if (dialect === 'sqlite') {
     const values = rows.flatMap(row => names.map(name => row[name] as null|string|number));
-    const tuples = rows.map((_, row) => `(${names.map((__, column) => `?${row*names.length+column+1}`).join(',')})`).join(',');
+    const tuples = rows.map(() => `(${names.map(() => '?').join(',')})`).join(',');
     const result = await (db as SqliteCommandDb).execute(`insert into ${relation(resource)}(${names.join(',')}) values ${tuples} returning *`, values);
     return {count: result.length, rows: returnRows ? result : []};
   }
@@ -33,7 +33,7 @@ async function insert(dialect: 'sqlite'|'postgres', schema: string, db: TestDb, 
 }
 async function update(dialect: 'sqlite'|'postgres', schema: string, db: TestDb, resource: string, set: Record<string, unknown>, where: Record<string, unknown>, returnRows = false) {
   const setEntries=Object.entries(set),whereEntries=Object.entries(where),values=[...setEntries,...whereEntries].map(([,value])=>value as null|string|number);
-  const marker = (index: number) => dialect === 'sqlite' ? `?${index}` : `$${index}`;
+  const marker = (index: number) => dialect === 'sqlite' ? '?' : `$${index}`;
   const assignments=setEntries.map(([name],index)=>`"${name}"=${marker(index+1)}`).join(',');
   const predicate=whereEntries.length?whereEntries.map(([name,value],index)=>value===null?`"${name}" is null`:`"${name}"=${marker(setEntries.length+index+1)}`).join(' and '):'true';
   const bindings=values.filter((_,index)=>index<setEntries.length||whereEntries[index-setEntries.length]?.[1]!==null);
@@ -46,13 +46,13 @@ async function update(dialect: 'sqlite'|'postgres', schema: string, db: TestDb, 
 }
 async function remove(dialect: 'sqlite'|'postgres', schema: string, db: TestDb, resource: string, where: Record<string, unknown>) {
   const entries=Object.entries(where),table=dialect==='sqlite' ? relation(resource) : `"${schema}"."${relation(resource)}"`;
-  const statement=`delete from ${table} where ${entries.map(([name],index)=>`"${name}"=${dialect==='sqlite'?'?':'$'}${index+1}`).join(' and ')} returning *`;
+  const statement=`delete from ${table} where ${entries.map(([name],index)=>`"${name}"=${dialect==='sqlite'?'?':`$${index+1}`}`).join(' and ')} returning *`;
   const values=entries.map(([,value])=>value as null|string|number);
   const rows=dialect==='sqlite' ? await (db as SqliteCommandDb).execute(statement,values) : await (db as PostgresCommandDb).execute(new Sql(statement,values));
   return {count:rows.length,rows:[]};
 }
 async function selectPriority(dialect: 'sqlite'|'postgres', db: TestDb, schema: string) {
-  if (dialect === 'sqlite') return (db as SqliteCommandDb).execute('select id from orders where priority>=?1', [1]);
+  if (dialect === 'sqlite') return (db as SqliteCommandDb).execute('select id from orders where priority>=?', [1]);
   return (db as PostgresCommandDb).execute(sql`select id from ${identifier(schema)}.${identifier('orders')} where priority>=${1}`);
 }
 for (const dialect of ['sqlite', 'postgres'] as const) describe.skipIf(dialect === 'postgres' && !pgEnabled)(`${dialect}: common API conformance`, () => {
