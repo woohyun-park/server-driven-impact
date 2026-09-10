@@ -2,10 +2,10 @@ import { validateCatalog } from '../../packages/sdi-postgres/src/postgres/catalo
 import { describe,it,expect,beforeAll,afterAll } from 'vitest';
 import postgres from 'postgres';
 import { Pool } from 'pg';
-import { pgDatabase } from '@server-driven-impact/postgres/pg';
+import { pgDatabase, type PgExecuteResult } from '@server-driven-impact/postgres/pg';
 import { randomUUID } from 'node:crypto';
 import { ordersDomain } from '../../examples/orders-impact/domain.ts';
-import { compilePostgresQuery,createPostgresCatalogResolver,generateObserverMigration,identifier,migratePostgresArtifacts,postgresAdapter,resolvePostgresResources,Sql,sql,type PostgresCommandDb as TrackedDb } from '@server-driven-impact/postgres';
+import { compilePostgresQuery,createPostgresCatalogResolver,generateObserverMigration,identifier,migratePostgresArtifacts,postgresAdapter,resolvePostgresResources,Sql,sql,type PostgresCommandDb as TrackedDb,type PostgresExecuteResult } from '@server-driven-impact/postgres';
 import { observerFingerprint,observerInternals,observerLayout } from '../../packages/sdi-postgres/src/postgres/observer.js';
 import { canonical, matchesInputSelector, type ImpactSet } from '@server-driven-impact/core';
 import { createImpact,defineQueries,q } from '@server-driven-impact/runtime';
@@ -30,6 +30,7 @@ describe.skipIf(!enabled)('orders domain / real PostgreSQL conformance',()=>{
   const setup=async(tx:Parameters<NonNullable<Parameters<typeof postgresAdapter>[0]['setup']>>[0],scope:unknown)=>{await tx.unsafe("select set_config('sdi.tenant',$1,true)",[String(scope)]);};
   const adapter=enabled ? postgresAdapter({database:db,setup}):undefined!;
   const engine=enabled ? createImpact({adapter,resources,queries}):undefined!;
+  const driverRows=(result:unknown) => pgPool ? (result as PgExecuteResult).rows : [...result as PostgresExecuteResult];
   const run=async(scope='a',work:(db:TrackedDb)=>Promise<unknown>)=>{
     const result=await engine.command({scope},db=>work(db));
     return {data:result.data,impact:result.impact};
@@ -138,7 +139,7 @@ describe.skipIf(!enabled)('orders domain / real PostgreSQL conformance',()=>{
     const inserted=await engine.command({scope:'a'},db=>db.execute(sql`
       insert into ${table}(id,tenant_id,customer_id,status,priority,note)
       values(${'native'},${'a'},${'native-before'},${'ready'},${1},${null}) returning id`));
-    expect(inserted.data).toEqual([{id:'native'}]);
+    expect(driverRows(inserted.data)).toEqual([{id:'native'}]);
     expect(includes(inserted.impact,'orders.list',{customer:'native-before'})).toBe(true);
     if(serverMajor>=15) {
       const merged=await engine.command({scope:'a'},db=>db.execute(sql`
@@ -177,7 +178,7 @@ describe.skipIf(!enabled)('orders domain / real PostgreSQL conformance',()=>{
     const changed=await extra.command({scope:'a'},tx=>tx.execute(sql`update ${identifier(schema)}.keyless_runtime set value=${'y'} where a=${7}`));
     expect(includes(changed.impact,'keyless.byA',{a:7})).toBe(true);
     const called=await extra.command({scope:'a'},tx=>tx.execute(sql`select ${identifier(schema)}.add_keyless(${9},${'rpc'}) as value`));
-    expect(called.data).toEqual([{value:9}]);
+    expect(driverRows(called.data)).toEqual([{value:9}]);
     expect(includes(called.impact,'keyless.byA',{a:9})).toBe(true);
   });
   it('executes an automatically compiled native SQL query and narrows its input impact',async()=>{

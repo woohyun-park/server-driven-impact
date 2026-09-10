@@ -1,5 +1,6 @@
 import { compileSelect } from './select.js';
 import type { SelectPlan } from '@server-driven-impact/runtime';
+import type postgres from 'postgres';
 import type { TransactionSql } from 'postgres';
 import { sql, Sql, identifier, join } from './sql.js';
 import { WriteSet } from '@server-driven-impact/core';
@@ -9,31 +10,41 @@ import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { assertCommandSql } from './command-sql.js';
 export type Transaction = Pick<TransactionSql,'unsafe'>;
+export type PostgresExecuteResult = postgres.RowList<Record<string, unknown>[]>;
 const MAX_WRITE_FACTS = LIMITS.facts;
 export type Row = Record<string, any>; // Database rows are validated at domain/API boundaries.
 export type Patch = Record<string,unknown | Sql>;
-export class TrackedDb {
+export class TrackedDb<TResult = PostgresExecuteResult> {
   private open = true;
   private savepointId = 0;
   readonly tx: Transaction;
   readonly writes: WriteSet;
   readonly scope: Scalar;
   private resources: Resources;
-  constructor(tx: Transaction, writes: WriteSet, scope: Scalar, resources: Resources, private observer?: (event:{resource:string;operation:string;before:Row[];after:Row[]})=>Promise<void>, private readonly databaseObserved = false) { this.tx=tx; this.writes=writes; this.scope=scope; this.resources=resources; }
+  constructor(
+    tx: Transaction,
+    writes: WriteSet,
+    scope: Scalar,
+    resources: Resources,
+    private observer?: (event:{resource:string;operation:string;before:Row[];after:Row[]})=>Promise<void>,
+    private readonly databaseObserved = false,
+    private readonly executeStatement: (statement: Sql) => Promise<TResult> = statement => tx.unsafe(statement.text,statement.values as never[]) as unknown as Promise<TResult>,
+  ) { this.tx=tx; this.writes=writes; this.scope=scope; this.resources=resources; }
   close() { this.open = false; }
   async selectPlan(plan: SelectPlan, resources: Resources): Promise<Row[]> {
     const statement = compileSelect(plan, {}, resources);
-    return (await this.run(new Sql(statement.text, statement.values))).map(row => row.value);
+    return (await this.queryRows(new Sql(statement.text, statement.values))).map(row => row.value);
   }
-  private async run(statement: Sql) {
+  private async queryRows(statement: Sql): Promise<Row[]> {
     if (!this.open) throw new Error('WRITE_CONTEXT_CLOSED');
-    return this.tx.unsafe(statement.text,statement.values as never[]);
+    return [...await this.tx.unsafe(statement.text,statement.values as never[])];
   }
-  /** Execute trusted, parameterized PostgreSQL SQL on the owned transaction. */
-  async execute(statement: Sql): Promise<Row[]> {
+  /** Execute once and return the selected driver's result container unchanged. */
+  async execute(statement: Sql): Promise<TResult> {
+    if (!this.open) throw new Error('WRITE_CONTEXT_CLOSED');
     if (!(statement instanceof Sql)) throw new Error('SQL_FRAGMENT_REQUIRED');
     await assertCommandSql(statement.text);
-    return [...await this.run(statement)];
+    return this.executeStatement(statement);
   }
   async copyFrom(statement: Sql, source: AsyncIterable<Uint8Array|string> | Iterable<Uint8Array|string>): Promise<void> {
     if (!(statement instanceof Sql) || statement.values.length || !/^\s*copy\b[\s\S]*\bfrom\s+stdin\b/i.test(statement.text)) throw new Error('COPY_FROM_STDIN_REQUIRED');
@@ -59,7 +70,7 @@ export class TrackedDb {
     if(options.concurrently && options.withData===false)throw new Error('INVALID_REFRESH_OPTIONS');
     const concurrently=options.concurrently ? new Sql(' concurrently') : new Sql('');
     const data=options.withData===false ? new Sql(' with no data') : new Sql(' with data');
-    await this.run(sql`refresh materialized view${concurrently} ${this.table(resource)}${data}`);
+    await this.queryRows(sql`refresh materialized view${concurrently} ${this.table(resource)}${data}`);
     this.writes.add([{resource,operation:'unknown',before:{kind:'unknown'},after:{kind:'unknown'},changedColumns:null}]);
   }
   private table(resource: string) {
@@ -73,7 +84,7 @@ export class TrackedDb {
   }
   async select(resource: string, where: Sql = sql`true`, options: {lock?:boolean;order?:Sql;limit?:number} = {}): Promise<Row[]> {
     const suffix = options.limit === undefined ? sql`` : sql`limit ${options.limit}`;
-    const rows = await this.run(sql`select to_jsonb(t) as value from ${this.table(resource)} t where ${where} ${options.order ? sql`order by ${options.order}` : sql``} ${suffix} ${options.lock ? sql`for update of t` : sql``}`);
+    const rows = await this.queryRows(sql`select to_jsonb(t) as value from ${this.table(resource)} t where ${where} ${options.order ? sql`order by ${options.order}` : sql``} ${suffix} ${options.lock ? sql`for update of t` : sql``}`);
     return rows.map(r => r.value);
   }
   async require(resource: string, where: Sql, lock = false): Promise<Row> {
@@ -82,7 +93,7 @@ export class TrackedDb {
     return row;
   }
   async lock(resource: string, where: Sql) {
-    await this.run(sql`with locked as materialized (select t.ctid from ${this.table(resource)} t where ${where} for update of t) select count(*) from locked`);
+    await this.queryRows(sql`with locked as materialized (select t.ctid from ${this.table(resource)} t where ${where} for update of t) select count(*) from locked`);
   }
   private rowState(value: Sql, resource: string): Sql {
     const config = this.resources[resource];
@@ -91,7 +102,7 @@ export class TrackedDb {
   }
   private async collect(resource: string, operation: 'insert'|'update'|'delete'|'upsert', mutation: Sql, returnRows: boolean) {
     if (this.databaseObserved) {
-      const [result] = await this.run(sql`with ${mutation}
+      const [result] = await this.queryRows(sql`with ${mutation}
         select count(*)::int as count,
         ${returnRows ? sql`coalesce(jsonb_agg(coalesce(changed.after_row,changed.before_row)),'[]'::jsonb)` : sql`'[]'::jsonb`} as rows
         from changed`);
@@ -103,7 +114,7 @@ export class TrackedDb {
       ? sql`(select coalesce(jsonb_agg(k),'[]'::jsonb) from jsonb_object_keys(coalesce(c.before_row,'{}'::jsonb) || coalesce(c.after_row,'{}'::jsonb)) k where c.before_row->k is distinct from c.after_row->k)`
       : sql`null::jsonb`;
     const detail=sql`jsonb_build_object('resource',${resource}::text,'operation',${operation === 'upsert' ? 'unknown' : operation}::text,'before',${before},'after',${after},'changedColumns',${changed})`;
-    const [result] = await this.run(sql`with ${mutation}, n as (select count(*) as count from changed),
+    const [result] = await this.queryRows(sql`with ${mutation}, n as (select count(*) as count from changed),
       details as materialized (select ${detail} as fact from changed c where (select count from n)<=${MAX_WRITE_FACTS})
       select n.count::int as count,
       ${returnRows || this.observer ? sql`(select coalesce(jsonb_agg(coalesce(c.after_row,c.before_row)),'[]'::jsonb) from (select * from changed limit ${MAX_WRITE_FACTS+1}) c)` : sql`'[]'::jsonb`} as rows,
@@ -158,15 +169,15 @@ export class TrackedDb {
     for (const child of this.resources[resource].cascades ?? []) await this.delete(child.resource,sql`t.${identifier(child.column)} in (${parents})`);
     return this.collect(resource,'delete',sql`changed as (delete from ${this.table(resource)} as t where ${where} returning to_jsonb(t) as before_row,null::jsonb as after_row)`,false);
   }
-  async savepoint<T>(work: (db: TrackedDb) => Promise<T>): Promise<T> {
+  async savepoint<T>(work: (db: TrackedDb<TResult>) => Promise<T>): Promise<T> {
     const name = identifier('tracked_'+(++this.savepointId));
-    const child = new TrackedDb(this.tx,this.writes.fork(),this.scope,this.resources,undefined,this.databaseObserved);
-    await this.run(sql`savepoint ${name}`);
+    const child = new TrackedDb(this.tx,this.writes.fork(),this.scope,this.resources,undefined,this.databaseObserved,this.executeStatement);
+    await this.queryRows(sql`savepoint ${name}`);
     try {
       const result = await work(child);
-      await this.run(sql`release savepoint ${name}`);
+      await this.queryRows(sql`release savepoint ${name}`);
       this.writes.merge(child.writes); return result;
-    } catch (error) { await this.run(sql`rollback to savepoint ${name}`); await this.run(sql`release savepoint ${name}`); throw error; }
+    } catch (error) { await this.queryRows(sql`rollback to savepoint ${name}`); await this.queryRows(sql`release savepoint ${name}`); throw error; }
     finally { child.close(); }
   }
 }

@@ -4,7 +4,8 @@ import type { WriteSet } from '@server-driven-impact/core';
 import { canonical, type Scalar } from '@server-driven-impact/core';
 import { bindAdapter, type ImpactAdapter, type QueryManifest, type Resources } from '@server-driven-impact/runtime/adapter';
 import { type ExecutableQueryPlan, type Input } from '@server-driven-impact/runtime';
-import { TrackedDb, type Transaction } from './tracked-db.js';
+import { TrackedDb, type PostgresExecuteResult, type Transaction } from './tracked-db.js';
+import { executeDriver, type DriverExecution } from './driver-execution.js';
 import { compileSelect } from './select.js';
 import { validateCatalog } from './catalog.js';
 import { identifier, sql, Sql } from './sql.js';
@@ -25,16 +26,16 @@ export { resolvePostgresResources } from './catalog.js';
 export { migratePostgresArtifacts, migratePostgresQueries } from './migration.js';
 export { compilePostgresArtifacts, type PostgresArtifacts, type PostgresSourceDefinition, type PostgresArtifactOptions } from './artifact.js';
 export type { PostgresMigrationDatabase } from './migration.js';
-export type { Row, Transaction } from './tracked-db.js';
+export type { PostgresExecuteResult, Row, Transaction } from './tracked-db.js';
 /** Native PostgreSQL operations bound to SDI's observed transaction. */
-export interface PostgresCommandDb {
+export interface PostgresCommandDb<TResult = PostgresExecuteResult> {
   readonly scope: Scalar;
-  execute(statement: Sql): Promise<Record<string, unknown>[]>;
+  execute(statement: Sql): Promise<TResult>;
   copyFrom(statement: Sql, source: AsyncIterable<Uint8Array|string> | Iterable<Uint8Array|string>): Promise<void>;
   copyTo(statement: Sql): AsyncIterable<Uint8Array>;
   cursor(statement: Sql, batchSize?: number): AsyncIterable<Record<string, unknown>[]>;
   refreshMaterializedView(resource: string, options?: {concurrently?:boolean;withData?:boolean}): Promise<void>;
-  savepoint<T>(work: (db: PostgresCommandDb) => Promise<T>): Promise<T>;
+  savepoint<T>(work: (db: PostgresCommandDb<TResult>) => Promise<T>): Promise<T>;
 }
 export interface PostgresOptions<T extends Record<string, unknown> = Record<string, never>> {
   database: postgres.Sql<T>;
@@ -46,7 +47,7 @@ export interface PostgresOptions<T extends Record<string, unknown> = Record<stri
   connectionMode?: 'direct' | 'session' | 'transaction';
 }
 
-function commandDb(tracked: TrackedDb): PostgresCommandDb {
+function commandDb<TResult>(tracked: TrackedDb<TResult>): PostgresCommandDb<TResult> {
   return Object.freeze({
     scope: tracked.scope,
     execute: statement => tracked.execute(statement),
@@ -54,8 +55,8 @@ function commandDb(tracked: TrackedDb): PostgresCommandDb {
     copyTo: statement => tracked.copyTo(statement),
     cursor: (statement, batchSize) => tracked.cursor(statement, batchSize),
     refreshMaterializedView: (resource, refreshOptions) => tracked.refreshMaterializedView(resource, refreshOptions),
-    savepoint: <T>(work: (db: PostgresCommandDb) => Promise<T>) => tracked.savepoint(child => work(commandDb(child))),
-  } satisfies PostgresCommandDb);
+    savepoint: <T>(work: (db: PostgresCommandDb<TResult>) => Promise<T>) => tracked.savepoint(child => work(commandDb(child))),
+  } satisfies PostgresCommandDb<TResult>);
 }
 
 export function postgresAdapter<T extends Record<string, unknown>>(options: PostgresOptions<T>): ImpactAdapter<PostgresCommandDb> {
@@ -177,7 +178,11 @@ export function postgresAdapter<T extends Record<string, unknown>>(options: Post
             await session.unsafe(`begin isolation level ${isolationLevel}`);
             await session.unsafe("select set_config('sdi.request_token',$1,true),set_config('sdi.scope',$2,true)",[token,String(scope)]);
             await options.setup?.(session,scope);
-            const tracked = new TrackedDb(session,writes,scope,resources,undefined,true);
+            const nativeExecution = (session as Transaction & Partial<DriverExecution<PostgresExecuteResult>>)[executeDriver];
+            const executeStatement = nativeExecution
+              ? (statement: Sql) => nativeExecution.call(session,statement.text,statement.values)
+              : (statement: Sql) => session.unsafe(statement.text,statement.values as never[]) as Promise<PostgresExecuteResult>;
+            const tracked = new TrackedDb(session,writes,scope,resources,undefined,true,executeStatement);
             const guarded = guardDatabase(commandDb(tracked));
             let data: V;
             try { data = await work(guarded.db); guarded.finish(); guarded.close(); }

@@ -56,8 +56,25 @@ console.log(result.impact);
 await database.end();
 ```
 
+`execute()` runs the statement once and returns the selected driver's result object without copying, flattening, or converting it. With postgres.js the result is `RowList<Record<string, unknown>[]>`, so returned rows remain directly iterable and `result.count` and `result.command` are available. With node-postgres the result is `QueryResult<Record<string, unknown>>`, with rows in `result.rows` and `result.rowCount: number | null`. Driver-specific fields follow that driver's versioned contract; SDI preserves the result container but does not infer column types from SQL.
+
+The driver result becomes `data` on the Command result:
+
+```ts
+const { data, impact } = await engine.command({ scope: 'account-a' }, db =>
+  db.execute(sql`update todos set status=${'closed'} where id=${'todo-1'}`),
+);
+
+console.log(data.count); // postgres.js: number
+console.log(impact.targets);
+```
+
+For `pgAdapter`, use `data.rowCount`; it remains `number | null` in TypeScript. The driver's processed-row count is the command tag's count, not the number of rows whose stored values changed. For example, updating one matching row to its existing value can report a count of `1` while `impact.targets` is empty because no observable row value changed. SQLSTATE and other execution failures remain driver error objects and are separate from successful execution results. The same result type is preserved through `savepoint()`, and a committed result is retained in `ImpactUnavailableError.data` if post-commit impact collection fails.
+
 The table must already exist, the runtime role must have its normal table privileges, and its row-level security policy must use the same scope established by `setup`. Generate and apply the observer migration with schema-owner credentials, then call `engine.validate()` at the application's startup, deployment, or health-check boundary. Normal Query and Command execution does not repeat full catalog validation.
 
 The conformance suite covers PostgreSQL 14–18 with postgres.js and pg. Transaction pooling, opaque dynamic SQL dependency inference, external I/O observation, autonomous procedures, held cursors, and two-phase commit are outside the atomic Command contract. The detailed contract is in the [PostgreSQL compatibility guide](https://github.com/woohyun-park/server-driven-impact/blob/main/spec/server-driven-impact/postgres-compatibility.md).
 
 Node.js 22.18 or newer is required.
+
+When upgrading from 0.1.x, see the corrected [0.2.0 migration guide](../../docs/migrations/postgres-0.2.md).

@@ -4,9 +4,10 @@ import { Pool } from 'pg';
 import { randomUUID } from 'node:crypto';
 import { matchesInputSelector } from '@server-driven-impact/core';
 import { createImpact, q } from '@server-driven-impact/runtime';
-import { compilePostgresArtifacts, compilePostgresQuery, createPostgresCatalogResolver, generateObserverMigration, identifier, migratePostgresQueries, postgresAdapter, sql, Sql, type PostgresMajor, type PostgresSourceDefinition } from '@server-driven-impact/postgres';
-import { pgAdapter, pgDatabase } from '@server-driven-impact/postgres/pg';
+import { compilePostgresArtifacts, compilePostgresQuery, createPostgresCatalogResolver, generateObserverMigration, identifier, migratePostgresQueries, postgresAdapter, sql, Sql, type PostgresCommandDb, type PostgresExecuteResult, type PostgresMajor, type PostgresSourceDefinition } from '@server-driven-impact/postgres';
+import { pgAdapter, pgDatabase, type PgExecuteResult } from '@server-driven-impact/postgres/pg';
 import { compileManifest } from '@server-driven-impact/runtime';
+import type { ImpactAdapter } from '@server-driven-impact/runtime/adapter';
 
 const adminUrl=process.env.SDI_POSTGRES_ADMIN_URL;
 const runtimeUrl=process.env.SDI_POSTGRES_RUNTIME_URL;
@@ -20,7 +21,9 @@ describe.skipIf(!enabled)('PostgreSQL release contract',()=>{
   const admin=enabled?postgres(adminUrl!,{max:2,prepare:false,onnotice:()=>{}}):undefined!;
   const pgPool=enabled && process.env.SDI_POSTGRES_DRIVER==='pg'?new Pool({connectionString:runtimeUrl,max:1}):undefined;
   const database=enabled?(pgPool?{...pgDatabase(pgPool),end:()=>pgPool.end()} as unknown as postgres.Sql:postgres(runtimeUrl!,{max:1,prepare:false,onnotice:()=>{}})):undefined!;
-  const adapter=()=>pgPool?pgAdapter({database:pgPool}):postgresAdapter({database});
+  type TestCommandDb=PostgresCommandDb<PostgresExecuteResult | PgExecuteResult>;
+  const adapter=():ImpactAdapter<TestCommandDb> => (pgPool?pgAdapter({database:pgPool}):postgresAdapter({database})) as unknown as ImpactAdapter<TestCommandDb>;
+  const driverRows=(result:PostgresExecuteResult | PgExecuteResult) => pgPool ? (result as PgExecuteResult).rows : [...result as PostgresExecuteResult];
   const resources={a:{schema,table:'a',idColumn:'id',scopeColumn:null,columns:['id','value']},b:{schema,table:'b',idColumn:'id',scopeColumn:null,columns:['id','value']}} as const;
   let version:PostgresMajor;
   const options=()=>({version,searchPath:[schema,'public'],runtimeRole:'routine_runtime'});
@@ -106,6 +109,25 @@ describe.skipIf(!enabled)('PostgreSQL release contract',()=>{
     expect(statements.some(text=>catalogSql.test(text))).toBe(true);
   });
 
+  it('preserves driver command metadata through command data and savepoints',async()=>{
+    const {engine}=await install({read:definition(`select * from "${schema}".a order by id`)});
+    const processed=await engine.command({scope:'a'},db=>db.execute(new Sql(`update "${schema}".a set value=value where id='one'`)));
+    expect(driverRows(processed.data)).toEqual([]);
+    if(pgPool) {
+      const result=processed.data as PgExecuteResult;
+      expect(result).toMatchObject({command:'UPDATE',rowCount:1});
+      const rowCount:number|null=result.rowCount;
+      void rowCount;
+    } else {
+      expect(processed.data as PostgresExecuteResult).toMatchObject({command:'UPDATE',count:1});
+    }
+    expect(processed.impact.targets).toEqual([]);
+    const missing=await engine.command({scope:'a'},db=>db.savepoint(child=>child.execute(new Sql(`update "${schema}".a set value=value where id='missing'`))));
+    expect(pgPool ? (missing.data as PgExecuteResult).rowCount : (missing.data as PostgresExecuteResult).count).toBe(0);
+    const returned=await engine.command({scope:'a'},db=>db.execute(new Sql(`update "${schema}".a set value=value where id='one' returning id`)));
+    expect(driverRows(returned.data)).toEqual([{id:'one'}]);
+  });
+
   it('compares native and SDI results across joins, anti joins, sets, recursion, windows and page boundaries',async()=>{
     const a=`"${schema}".a`, b=`"${schema}".b`;
     const texts=[
@@ -168,7 +190,7 @@ describe.skipIf(!enabled)('PostgreSQL release contract',()=>{
       throw new Error('rollback sequence transaction');
     })).rejects.toThrow('rollback sequence transaction');
     const next=await engine.command({scope:'a'},db=>db.execute(new Sql(`select nextval('"${schema}".sequence_value') as value`)));
-    expect(String(next.data[0].value)).toBe('2');
+    expect(String(driverRows(next.data)[0].value)).toBe('2');
   });
 
   it('recompiles changed views atomically, explicitly detects old artifacts and observes the new dependency',async()=>{
