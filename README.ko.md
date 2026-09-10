@@ -129,17 +129,13 @@ const engine = createImpact({
 await engine.validate();
 
 const context = { scope: 'account-a' };
-await engine.command(context, db => db.insert('todos', [{
-  id: 'todo-1',
-  account_id: 'account-a',
-  status: 'open',
-}]));
+await engine.command(context, db => db.execute(
+  'insert into todos(id, account_id, status) values(?1, ?2, ?3)',
+  ['todo-1', 'account-a', 'open'],
+));
 
 const { data, impact } = await engine.command(context, db =>
-  db.update('todos', {
-    where: { id: 'todo-1' },
-    set: { status: 'done' },
-  }),
+  db.execute('update todos set status=?1 where id=?2', ['done', 'todo-1']),
 );
 
 console.log(data);
@@ -155,7 +151,7 @@ database.close();
 
 ### Resources
 
-Resource는 애플리케이션의 이름을 DB relation에 연결합니다. `idColumn`은 행 식별자이고, `scopeColumn`은 호출자별 영향을 구분합니다. 전역 데이터에는 `null`을 사용합니다. `columns`는 Query plan과 쓰기를 검증할 때 사용하는 허용 목록입니다.
+Resource는 애플리케이션의 이름을 DB relation에 연결합니다. `idColumn`은 행 식별자이고, `scopeColumn`은 호출자별 영향을 구분합니다. 전역 데이터에는 `null`을 사용합니다. `columns`는 Query plan을 검증하고 변경 사실을 수집할 필드를 설명합니다.
 
 `scope`는 영향 범위를 구분하는 메타데이터이며 인증이나 인가 수단이 아닙니다. 애플리케이션이 사용자의 신원을 검증하고 RLS 같은 DB 규칙으로 접근을 통제해야 합니다.
 
@@ -180,7 +176,7 @@ Command 콜백의 모든 작업은 반드시 `await`해야 합니다. 다른 연
 - `caller`는 검증된 Command scope로 제한됩니다.
 - `global`은 `scopeColumn`이 `null`인 Resource에 사용됩니다.
 
-애플리케이션에서 기준 selector 판정이 필요하면 `@server-driven-impact/core`의 `matchesInputSelector()`를 사용할 수 있습니다.
+애플리케이션에서 기준 selector 판정이 필요하면 `@server-driven-impact/core`의 `matchesInputSelector()`를 사용할 수 있습니다. 숫자 문자열 변환과 SQLite의 `NOCASE`·`RTRIM`처럼 DB 비교 방식이 다른 경우도 보수적으로 포함합니다. 일부 캐시를 더 갱신할 수는 있지만 영향받은 항목을 빠뜨리지는 않습니다.
 
 ## PostgreSQL 도입 순서
 

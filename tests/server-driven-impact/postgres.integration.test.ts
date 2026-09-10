@@ -5,7 +5,7 @@ import { Pool } from 'pg';
 import { pgDatabase } from '@server-driven-impact/postgres/pg';
 import { randomUUID } from 'node:crypto';
 import { ordersDomain } from '../../examples/orders-impact/domain.ts';
-import { compilePostgresQuery,createPostgresCatalogResolver,generateObserverMigration,identifier,migratePostgresArtifacts,postgresAdapter,resolvePostgresResources,sql, type PostgresSqlDb as TrackedDb } from '@server-driven-impact/postgres';
+import { compilePostgresQuery,createPostgresCatalogResolver,generateObserverMigration,identifier,migratePostgresArtifacts,postgresAdapter,resolvePostgresResources,Sql,sql,type PostgresCommandDb as TrackedDb } from '@server-driven-impact/postgres';
 import { observerFingerprint,observerInternals,observerLayout } from '../../packages/sdi-postgres/src/postgres/observer.js';
 import { canonical, matchesInputSelector, type ImpactSet } from '@server-driven-impact/core';
 import { createImpact,defineQueries,q } from '@server-driven-impact/runtime';
@@ -31,8 +31,15 @@ describe.skipIf(!enabled)('orders domain / real PostgreSQL conformance',()=>{
   const adapter=enabled ? postgresAdapter({database:db,setup}):undefined!;
   const engine=enabled ? createImpact({adapter,resources,queries}):undefined!;
   const run=async(scope='a',work:(db:TrackedDb)=>Promise<unknown>)=>{
-    const result=await engine.command({scope},db=>work(db.postgres));
+    const result=await engine.command({scope},db=>work(db));
     return {data:result.data,impact:result.impact};
+  };
+  const insert=async(tx:TrackedDb,resource:string,rows:Record<string,unknown>[])=>{
+    const table=resource==='items'?'order_items':resource;
+    const names=Object.keys(rows[0]);
+    const values=rows.flatMap(row=>names.map(name=>row[name]));
+    const tuples=rows.map((_,row)=>`(${names.map((__,column)=>`$${row*names.length+column+1}`).join(',')})`).join(',');
+    return tx.execute(new Sql(`insert into "${schema}"."${table}"(${names.map(name=>`"${name}"`).join(',')}) values ${tuples} returning *`,values));
   };
   const read=(endpoint:keyof typeof queries,input:Record<string,unknown>,scope='a')=>engine.query(endpoint,input,{scope});
   function includes(impact:ImpactSet,endpoint:string,input:Record<string,unknown>) {return impact.targets.some(t=>t.endpoint===endpoint && matchesInputSelector(input,t.selector));}
@@ -58,33 +65,39 @@ describe.skipIf(!enabled)('orders domain / real PostgreSQL conformance',()=>{
     expect(serverMajor).toBeGreaterThanOrEqual(14);
     expect(serverMajor).toBeLessThanOrEqual(18);
   });
+  it('rejects narrow selectors on nondeterministic collations during validation',async()=>{
+    await admin.unsafe(`create collation "${schema}".folded (provider=icu,locale='und-u-ks-level2',deterministic=false);
+      create table "${schema}".collated(id text primary key,value text collate "${schema}".folded)`);
+    const collated={value:{schema,table:'collated',idColumn:'id',scopeColumn:null,columns:['id','value']}};
+    await expect(validateCatalog(admin,collated,{protocolVersion:1,reads:{byValue:[{resource:'value',columns:'*',bindings:[{column:'value',input:'value'}]}]}})).rejects.toThrow('UNSUPPORTED_SELECTOR_COLLATION:value:value');
+  });
   it('empty→insert, customer move, joins, aggregates, cascade and tenant isolation',async()=>{
     expect(await read('orders.list',{customer:'first'})).toEqual([]);
-    const inserted=await run('a',tx=>tx.insert('orders',[{id:'one',tenant_id:'a',customer_id:'first',status:'ready',priority:1,note:null}]));
+    const inserted=await run('a',tx=>insert(tx,'orders',[{id:'one',tenant_id:'a',customer_id:'first',status:'ready',priority:1,note:null}]));
     expect(includes(inserted.impact,'orders.list',{customer:'first'})).toBe(true);
     expect(await read('orders.list',{customer:'first'},'b')).toEqual([]);
-    await expect(run('b',tx=>tx.insert('orders',[{id:'forbidden',tenant_id:'a',customer_id:null,status:'ready',priority:0,note:null}]))).rejects.toMatchObject({code:'42501'});
-    const moved=await run('a',tx=>tx.update('orders',{customer_id:'second'},sql`t.id='one'`));
+    await expect(run('b',tx=>insert(tx,'orders',[{id:'forbidden',tenant_id:'a',customer_id:null,status:'ready',priority:0,note:null}]))).rejects.toMatchObject({code:'42501'});
+    const moved=await run('a',tx=>tx.execute(sql`update ${identifier(schema)}.orders set customer_id=${'second'} where id=${'one'}`));
     for(const customer of ['first','second'])expect(includes(moved.impact,'orders.list',{customer})).toBe(true);
-    const item=await run('a',tx=>tx.insert('items',[{id:'item',tenant_id:'a',order_id:'one',amount:42}]));
+    const item=await run('a',tx=>insert(tx,'items',[{id:'item',tenant_id:'a',order_id:'one',amount:42}]));
     expect(includes(item.impact,'orders.detail',{id:'one'})).toBe(true);expect(includes(item.impact,'orders.total',{id:'one'})).toBe(true);
     expect(await read('orders.total',{id:'one'})).toBe(42);
-    const deleted=await run('a',tx=>tx.delete('orders',sql`t.id='one'`));
+    const deleted=await run('a',tx=>tx.execute(sql`delete from ${identifier(schema)}.orders where id=${'one'}`));
     expect(includes(deleted.impact,'orders.total',{id:'one'})).toBe(true);expect(await read('orders.total',{id:'one'})).toBe(0);
   });
   it('rollback/savepoint, no-op, commit failure and closed contexts',async()=>{
     let captured:TrackedDb|undefined;
-    await expect(run('a',async tx=>{captured=tx;await tx.insert('orders',[{id:'rolled',tenant_id:'a',customer_id:'x',status:'ready',priority:0,note:null}]);throw new Error('rollback');})).rejects.toThrow('rollback');
+    await expect(run('a',async tx=>{captured=tx;await insert(tx,'orders',[{id:'rolled',tenant_id:'a',customer_id:'x',status:'ready',priority:0,note:null}]);throw new Error('rollback');})).rejects.toThrow('rollback');
     expect(await read('orders.detail',{id:'rolled'})).toEqual([]);
-    await expect(captured!.insert('orders',[])).rejects.toThrow('WRITE_CONTEXT_CLOSED');
+    await expect(captured!.execute(sql`select 1`)).rejects.toThrow('WRITE_CONTEXT_CLOSED');
     const result=await run('a',async tx=>{
-      await expect(tx.savepoint(async child=>{await child.insert('orders',[{id:'child',tenant_id:'a',customer_id:'child',status:'ready',priority:0,note:null}]);throw new Error('child rollback');})).rejects.toThrow('child rollback');
-      await tx.savepoint(child=>child.insert('orders',[{id:'kept',tenant_id:'a',customer_id:'kept',status:'ready',priority:0,note:null}]));
+      await expect(tx.savepoint(async child=>{await insert(child,'orders',[{id:'child',tenant_id:'a',customer_id:'child',status:'ready',priority:0,note:null}]);throw new Error('child rollback');})).rejects.toThrow('child rollback');
+      await tx.savepoint(child=>insert(child,'orders',[{id:'kept',tenant_id:'a',customer_id:'kept',status:'ready',priority:0,note:null}]));
     });
     expect(await read('orders.detail',{id:'child'})).toEqual([]);expect(canonical(result.impact)).not.toContain('child');
-    expect((await run('a',tx=>tx.update('orders',{note:'no'},sql`t.id='missing'`))).impact.targets).toEqual([]);
+    expect((await run('a',tx=>tx.execute(sql`update ${identifier(schema)}.orders set note=${'no'} where id=${'missing'}`))).impact.targets).toEqual([]);
     await admin.unsafe(`alter table "${schema}".orders add constraint unique_note unique(note) deferrable initially deferred`);
-    await expect(run('a',tx=>tx.insert('orders',[{id:'bad1',tenant_id:'a',customer_id:null,status:'ready',priority:0,note:'duplicate'},{id:'bad2',tenant_id:'a',customer_id:null,status:'ready',priority:0,note:'duplicate'}]))).rejects.toMatchObject({code:'23505'});
+    await expect(run('a',tx=>insert(tx,'orders',[{id:'bad1',tenant_id:'a',customer_id:null,status:'ready',priority:0,note:'duplicate'},{id:'bad2',tenant_id:'a',customer_id:null,status:'ready',priority:0,note:'duplicate'}]))).rejects.toMatchObject({code:'23505'});
     expect(await read('orders.detail',{id:'bad1'})).toEqual([]);
   });
   it('serializes artifact migration against an active SDI transaction',async()=>{
@@ -104,37 +117,37 @@ describe.skipIf(!enabled)('orders domain / real PostgreSQL conformance',()=>{
     expect(migrated).toBe(true);
   });
   it('fixed-seed result-change implies impact, across WHERE/ORDER and scalar predicates',async()=>{
-    await run('a',tx=>tx.insert('orders',Array.from({length:8},(_,i)=>({id:'seed'+i,tenant_id:'a',customer_id:i%2?'odd':'even',status:i%2?'ready':'draft',priority:i,note:null}))));
+    await run('a',tx=>insert(tx,'orders',Array.from({length:8},(_,i)=>({id:'seed'+i,tenant_id:'a',customer_id:i%2?'odd':'even',status:i%2?'ready':'draft',priority:i,note:null}))));
     let seed=713;const rand=()=>{seed=(Math.imul(seed,1664525)+1013904223)>>>0;return seed>>>8;};
     const inputs=[['orders.list',{customer:'odd'}],['orders.list',{customer:'even'}],['orders.ready',{}],...Array.from({length:8},(_,i)=>['orders.detail',{id:'seed'+i}])] as [keyof typeof queries,Record<string,unknown>][];
     for(let i=0;i<32;i++) {
       const before=await Promise.all(inputs.map(([endpoint,input])=>read(endpoint,input)));
       const id='seed'+rand()%8;
-      const result=await run('a',tx=>tx.update('orders',{status:rand()%2?'ready':'draft',priority:rand()%20,customer_id:rand()%2?'odd':'even'},sql`t.id=${id}`));
+      const result=await run('a',tx=>tx.execute(sql`update ${identifier(schema)}.orders set status=${rand()%2?'ready':'draft'},priority=${rand()%20},customer_id=${rand()%2?'odd':'even'} where id=${id}`));
       const after=await Promise.all(inputs.map(([endpoint,input])=>read(endpoint,input)));
       for(let j=0;j<inputs.length;j++)if(canonical(before[j])!==canonical(after[j]))expect(includes(result.impact,...inputs[j]),`${i} ${inputs[j][0]}`).toBe(true);
     }
   });
   it('oversized selector values widen in the database before detailed facts return',async()=>{
-    const result=await run('a',tx=>tx.insert('orders',[{id:'large-selector',tenant_id:'a',customer_id:'x'.repeat(140000),status:'ready',priority:0,note:null}]));
+    const result=await run('a',tx=>insert(tx,'orders',[{id:'large-selector',tenant_id:'a',customer_id:'x'.repeat(140000),status:'ready',priority:0,note:null}]));
     expect(result.impact.targets.find(t=>t.endpoint==='orders.list')?.selector.kind).toBe('all');
     expect(canonical(result.impact).length).toBeLessThan(2000);
   });
   it('executes native PostgreSQL DML unchanged on the observed transaction',async()=>{
     const table=sql`${identifier(schema)}.${identifier('orders')}`;
-    const inserted=await engine.command({scope:'a'},db=>db.postgres.execute(sql`
+    const inserted=await engine.command({scope:'a'},db=>db.execute(sql`
       insert into ${table}(id,tenant_id,customer_id,status,priority,note)
       values(${'native'},${'a'},${'native-before'},${'ready'},${1},${null}) returning id`));
     expect(inserted.data).toEqual([{id:'native'}]);
     expect(includes(inserted.impact,'orders.list',{customer:'native-before'})).toBe(true);
     if(serverMajor>=15) {
-      const merged=await engine.command({scope:'a'},db=>db.postgres.execute(sql`
+      const merged=await engine.command({scope:'a'},db=>db.execute(sql`
         merge into ${table} t using (values(${'native'},${'native-after'})) s(id,customer_id)
         on t.id=s.id when matched then update set customer_id=s.customer_id`));
       expect(includes(merged.impact,'orders.list',{customer:'native-before'})).toBe(true);
       expect(includes(merged.impact,'orders.list',{customer:'native-after'})).toBe(true);
     } else {
-      await expect(engine.command({scope:'a'},db=>db.postgres.execute(sql`
+      await expect(engine.command({scope:'a'},db=>db.execute(sql`
         merge into ${table} t using (values(${'native'},${'native-after'})) s(id,customer_id)
         on t.id=s.id when matched then update set customer_id=s.customer_id`))).rejects.toMatchObject({code:'42601'});
     }
@@ -155,18 +168,17 @@ describe.skipIf(!enabled)('orders domain / real PostgreSQL conformance',()=>{
       'keyless.byA':{input,plan:q.select('keyless',{where:[q.eq('a',q.input('a'))]})},
     });
     await admin.unsafe(generateObserverMigration(extraResources,compileManifest(extraQueries,extraResources),{runtimeRole:'routine_runtime'}));
-    const extra=createImpact({adapter:postgresAdapter({database:db,routines:{addKeyless:{schema,name:'add_keyless',arguments:['int','text']}}}),resources:extraResources,queries:extraQueries});
+    const extra=createImpact({adapter:postgresAdapter({database:db}),resources:extraResources,queries:extraQueries});
     await extra.validate();
-    const inserted=await extra.command({scope:'a'},tx=>tx.insert('composite',[{a:1,b:2,value:'x'}]));
+    const inserted=await extra.command({scope:'a'},tx=>tx.execute(sql`insert into ${identifier(schema)}.composite_runtime(a,b,value) values(${1},${2},${'x'})`));
     expect(includes(inserted.impact,'composite.byA',{a:1})).toBe(true);
-    const keyless=await extra.command({scope:'a'},tx=>tx.insert('keyless',[{a:7,value:'x'}]));
+    const keyless=await extra.command({scope:'a'},tx=>tx.execute(sql`insert into ${identifier(schema)}.keyless_runtime(a,value) values(${7},${'x'})`));
     expect(includes(keyless.impact,'keyless.byA',{a:7})).toBe(true);
-    const changed=await extra.command({scope:'a'},tx=>tx.update('keyless',{where:{a:7},set:{value:'y'}}));
+    const changed=await extra.command({scope:'a'},tx=>tx.execute(sql`update ${identifier(schema)}.keyless_runtime set value=${'y'} where a=${7}`));
     expect(includes(changed.impact,'keyless.byA',{a:7})).toBe(true);
-    const called=await extra.command({scope:'a'},tx=>tx.call('addKeyless',[9,'rpc']));
-    expect(called.data).toEqual([9]);
+    const called=await extra.command({scope:'a'},tx=>tx.execute(sql`select ${identifier(schema)}.add_keyless(${9},${'rpc'}) as value`));
+    expect(called.data).toEqual([{value:9}]);
     expect(includes(called.impact,'keyless.byA',{a:9})).toBe(true);
-    await expect(extra.command({scope:'a'},tx=>tx.call('missing',[]))).rejects.toThrow('UNREGISTERED_ROUTINE');
   });
   it('executes an automatically compiled native SQL query and narrows its input impact',async()=>{
     await admin.unsafe(`create table "${schema}"."NativeRows"("Key" text primary key,"Value" text not null,"Payload" json);
@@ -179,10 +191,10 @@ describe.skipIf(!enabled)('orders domain / real PostgreSQL conformance',()=>{
     await native.validate();
     expect(await native.query('native.byId',{id:'one'},{scope:'a'})).toEqual([]);
     const table=sql`${identifier(schema)}.${identifier('NativeRows')}`;
-    const result=await native.command({scope:'a'},db=>db.postgres.execute(sql`insert into ${table}(${identifier('Key')},${identifier('Value')},${identifier('Payload')}) values(${'one'},${'hello'},${'{"a":1}'}::json)`));
+    const result=await native.command({scope:'a'},db=>db.execute(sql`insert into ${table}(${identifier('Key')},${identifier('Value')},${identifier('Payload')}) values(${'one'},${'hello'},${'{"a":1}'}::json)`));
     expect(includes(result.impact,'native.byId',{id:'one'})).toBe(true);
     expect(includes(result.impact,'native.byId',{id:'two'})).toBe(false);
-    const updated=await native.command({scope:'a'},db=>db.postgres.execute(sql`update ${table} set ${identifier('Payload')}=${'{"a":2}'}::json where ${identifier('Key')}=${'one'}`));
+    const updated=await native.command({scope:'a'},db=>db.execute(sql`update ${table} set ${identifier('Payload')}=${'{"a":2}'}::json where ${identifier('Key')}=${'one'}`));
     expect(includes(updated.impact,'native.byId',{id:'one'})).toBe(true);
     expect(await native.query('native.byId',{id:'one'},{scope:'a'})).toEqual([{Key:'one',Value:'hello',Payload:pgPool?{a:2}:'{"a":2}'}]);
   });
@@ -200,7 +212,8 @@ describe.skipIf(!enabled)('orders domain / real PostgreSQL conformance',()=>{
       alter table "${schema}".secured enable row level security;
       create policy hidden_dependency on "${schema}".secured using(exists(select 1 from "${schema}".permissions p where p.uid=secured.uid))`);
     await expect(validateCatalog(admin,{test:{schema,table:'secured',idColumn:'id',scopeColumn:null,columns:['id','uid']}})).rejects.toThrow('UNRESOLVED_RLS_DEPENDENCY');
-    const result=await run('a',tx=>tx.insert('orders',[{id:'kept',tenant_id:'a',customer_id:'upsert',status:'ready',priority:0,note:null}],{conflict:{keys:['id'],patch:{customer_id:'upsert'}}}));
+    const result=await run('a',tx=>tx.execute(sql`insert into ${identifier(schema)}.orders(id,tenant_id,customer_id,status,priority,note)
+      values(${'kept'},${'a'},${'upsert'},${'ready'},${0},${null}) on conflict(id) do update set customer_id=excluded.customer_id`));
     expect(result.impact.targets.find(t=>t.endpoint==='orders.list')?.selector).toEqual({kind:'inputs',values:[{customer:'kept'},{customer:'upsert'}]});
   });
   it('expands nested view and RLS helper dependencies through the catalog',async()=>{
@@ -235,7 +248,7 @@ describe.skipIf(!enabled)('orders domain / real PostgreSQL conformance',()=>{
     const securedEngine=createImpact({adapter:postgresAdapter({database:db}),resources:securedResources,queries:securedQueries});
     await securedEngine.validate();
     expect(await securedEngine.query('secured.byId',{id:'visible'},{scope:'a'})).toEqual([]);
-    const changed=await securedEngine.command({scope:'a'},db=>db.postgres.execute(sql`insert into ${identifier(schema)}.${identifier('memberships')}(tenant_id) values(${'a'})`));
+    const changed=await securedEngine.command({scope:'a'},db=>db.execute(sql`insert into ${identifier(schema)}.${identifier('memberships')}(tenant_id) values(${'a'})`));
     expect(changed.impact.targets).toContainEqual({endpoint:'secured.byId',scope:'global',selector:{kind:'all'}});
     expect(await securedEngine.query('secured.byId',{id:'visible'},{scope:'a'})).toEqual([{id:'visible',tenant_id:'a',value:'value'}]);
   });
@@ -265,7 +278,7 @@ describe.skipIf(!enabled)('orders domain / real PostgreSQL conformance',()=>{
     await pair.validate();
     const input={left:'a',right:'b'};
     const before=await pair.query('pair',input,{scope:'a'});
-    const changed=await pair.command({scope:'a'},db=>db.postgres.execute(sql`update ${identifier(schema)}.${identifier('compatibility_users')} set name=${'Changed'} where id=${'a'}`));
+    const changed=await pair.command({scope:'a'},db=>db.execute(sql`update ${identifier(schema)}.${identifier('compatibility_users')} set name=${'Changed'} where id=${'a'}`));
     expect(await pair.query('pair',input,{scope:'a'})).not.toEqual(before);
     expect(includes(changed.impact,'pair',input)).toBe(true);
     await expect(compilePostgresQuery({text:`select lower(name) from "${schema}".compatibility_users`},compatibilityResources,serverMajor as 14|15|16|17|18,{catalog}))
@@ -285,7 +298,7 @@ describe.skipIf(!enabled)('orders domain / real PostgreSQL conformance',()=>{
     const hidden=createImpact({adapter:postgresAdapter({database:db}),resources:discovering.resources,queries:hiddenQueries});
     await hidden.validate();
     const hiddenBefore=await hidden.query('hidden',{}, {scope:'a'});
-    const hiddenChanged=await hidden.command({scope:'a'},db=>db.postgres.execute(sql`delete from ${identifier(schema)}.${identifier('compatibility_hidden')} where id=${'a'}`));
+    const hiddenChanged=await hidden.command({scope:'a'},db=>db.execute(sql`delete from ${identifier(schema)}.${identifier('compatibility_hidden')} where id=${'a'}`));
     expect(await hidden.query('hidden',{}, {scope:'a'})).not.toEqual(hiddenBefore);
     expect(includes(hiddenChanged.impact,'hidden',{})).toBe(true);
     await expect(compilePostgresQuery({text:`select now(),id from "${schema}".compatibility_users`},compatibilityResources,serverMajor as 14|15|16|17|18,{catalog}))
@@ -318,25 +331,25 @@ describe.skipIf(!enabled)('orders domain / real PostgreSQL conformance',()=>{
     const events=sql`${identifier(schema)}.${identifier('events')}`;
     const early=sql`${identifier(schema)}.${identifier('events_early')}`;
     const inheritedChild=sql`${identifier(schema)}.${identifier('inherited_events_child')}`;
-    const parentWrite=await hierarchy.command({scope:'a'},db=>db.postgres.execute(sql`insert into ${events} values(${1},${1},${'parent'})`));
+    const parentWrite=await hierarchy.command({scope:'a'},db=>db.execute(sql`insert into ${events} values(${1},${1},${'parent'})`));
     expect(includes(parentWrite.impact,'events.byId',{id:1})).toBe(true);
-    const leafWrite=await hierarchy.command({scope:'a'},db=>db.postgres.execute(sql`insert into ${early} values(${2},${2},${'leaf'})`));
+    const leafWrite=await hierarchy.command({scope:'a'},db=>db.execute(sql`insert into ${early} values(${2},${2},${'leaf'})`));
     expect(includes(leafWrite.impact,'events.byId',{id:2})).toBe(true);
-    const moved=await hierarchy.command({scope:'a'},db=>db.postgres.execute(sql`update ${events} set bucket=${11} where id=${1}`));
+    const moved=await hierarchy.command({scope:'a'},db=>db.execute(sql`update ${events} set bucket=${11} where id=${1}`));
     expect(includes(moved.impact,'events.byId',{id:1})).toBe(true);
-    const inheritedWrite=await hierarchy.command({scope:'a'},db=>db.postgres.execute(sql`insert into ${inheritedChild}(id,value,extra) values(${3},${'child'},${'extra'})`));
+    const inheritedWrite=await hierarchy.command({scope:'a'},db=>db.execute(sql`insert into ${inheritedChild}(id,value,extra) values(${3},${'child'},${'extra'})`));
     expect(includes(inheritedWrite.impact,'inherited.byId',{id:3})).toBe(true);
     await admin.unsafe(`create table "${schema}".events_future partition of "${schema}".events for values from (20) to (30)`);
     await expect(hierarchy.validate()).rejects.toThrow('RELATION_TOPOLOGY_DRIFT');
     const installed=await migratePostgresArtifacts(admin,unresolved,hierarchyManifest,{runtimeRole:'routine_runtime'});
     expect(installed.impact.targets.map(target=>target.endpoint)).toEqual(['events.byId','inherited.byId']);
     const next=createImpact({adapter:postgresAdapter({database:db}),resources:installed.resources,queries:hierarchyQueries});
-    const future=await next.command({scope:'a'},db=>db.postgres.execute(sql`insert into ${events} values(${4},${21},${'future'})`));
+    const future=await next.command({scope:'a'},db=>db.execute(sql`insert into ${events} values(${4},${21},${'future'})`));
     expect(includes(future.impact,'events.byId',{id:4})).toBe(true);
   });
   it('keeps COPY and cursor protocols inside the guarded physical session',async()=>{
     const orders=sql`${identifier(schema)}.${identifier('orders')}`;
-    await expect(engine.command({scope:'a'},db=>db.postgres.copyFrom(
+    await expect(engine.command({scope:'a'},db=>db.copyFrom(
       sql`copy ${orders}(id,tenant_id,customer_id,status,priority,note) from stdin with (format csv)`,
       ['copy-forbidden,a,copy,ready,1,\n'],
     ))).rejects.toMatchObject({code:'0A000'});
@@ -348,25 +361,25 @@ describe.skipIf(!enabled)('orders domain / real PostgreSQL conformance',()=>{
     const copyEngine=createImpact({adapter:postgresAdapter({database:db}),resources:copyResources,queries:copyQueries});
     await copyEngine.validate();
     const table=sql`${identifier(schema)}.${identifier('copy_rows')}`;
-    const copied=await copyEngine.command({scope:'a'},db=>db.postgres.copyFrom(
+    const copied=await copyEngine.command({scope:'a'},db=>db.copyFrom(
       sql`copy ${table}(id,group_id,value) from stdin with (format csv)`,
       ['copy-one,copy,1\n','copy-two,copy,2\n'],
     ));
     expect(includes(copied.impact,'copy.byGroup',{group:'copy'})).toBe(true);
     const cursorRows=await copyEngine.command({scope:'a'},async db=>{
       const rows:Record<string,unknown>[]=[];
-      for await(const batch of db.postgres.cursor(sql`select id from ${table} where id like ${'copy-%'} order by id`,1))rows.push(...batch);
+      for await(const batch of db.cursor(sql`select id from ${table} where id like ${'copy-%'} order by id`,1))rows.push(...batch);
       return rows;
     });
     expect(cursorRows.data).toEqual([{id:'copy-one'},{id:'copy-two'}]);
     const exported=await copyEngine.command({scope:'a'},async db=>{
       const chunks:Uint8Array[]=[];
-      for await(const chunk of db.postgres.copyTo(sql`copy (select id from ${table} where id like 'copy-%' order by id) to stdout`))chunks.push(chunk);
+      for await(const chunk of db.copyTo(sql`copy (select id from ${table} where id like 'copy-%' order by id) to stdout`))chunks.push(chunk);
       return Buffer.concat(chunks).toString('utf8');
     });
     expect(exported.data).toBe('copy-one\ncopy-two\n');
     await expect(copyEngine.command({scope:'a'},async db=>{
-      db.postgres.cursor(sql`select id from ${table}`);
+      db.cursor(sql`select id from ${table}`);
     })).rejects.toThrow('UNAWAITED_DATABASE_OPERATION');
   });
   it('marks a materialized view only after its refresh succeeds',async()=>{
@@ -384,16 +397,16 @@ describe.skipIf(!enabled)('orders domain / real PostgreSQL conformance',()=>{
     expect(await material.query('snapshot.all',{}, {scope:'a'})).toEqual([{id:'one',value:'before'}]);
     await admin.unsafe(`insert into "${schema}".material_source values('two','after')`);
     expect(await material.query('snapshot.all',{}, {scope:'a'})).toEqual([{id:'one',value:'before'}]);
-    const refreshed=await material.command({scope:'a'},db=>db.postgres.refreshMaterializedView('snapshot'));
+    const refreshed=await material.command({scope:'a'},db=>db.refreshMaterializedView('snapshot'));
     expect(refreshed.impact.targets).toEqual([{endpoint:'snapshot.all',scope:'global',selector:{kind:'all'}}]);
     expect(await material.query('snapshot.all',{}, {scope:'a'})).toEqual([{id:'one',value:'before'},{id:'two',value:'after'}]);
     await admin.unsafe(`insert into "${schema}".material_source values('three','rolled-back')`);
     const rolledBack=await material.command({scope:'a'},async db=>{
-      await expect(db.savepoint(async child=>{await child.postgres.refreshMaterializedView('snapshot');throw new Error('rollback refresh');})).rejects.toThrow('rollback refresh');
+      await expect(db.savepoint(async child=>{await child.refreshMaterializedView('snapshot');throw new Error('rollback refresh');})).rejects.toThrow('rollback refresh');
     });
     expect(rolledBack.impact.targets).toEqual([]);
     expect(await material.query('snapshot.all',{}, {scope:'a'})).toEqual([{id:'one',value:'before'},{id:'two',value:'after'}]);
-    await expect(material.command({scope:'a'},db=>db.postgres.refreshMaterializedView('missing'))).rejects.toThrow('MATERIALIZED_VIEW_RESOURCE_REQUIRED');
+    await expect(material.command({scope:'a'},db=>db.refreshMaterializedView('missing'))).rejects.toThrow('MATERIALIZED_VIEW_RESOURCE_REQUIRED');
   });
   it('refuses startup when an installed observer function was replaced',async()=>{
     const manifest=compileManifest(queries,resources);

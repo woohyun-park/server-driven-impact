@@ -4,7 +4,7 @@ import { pgAdapter } from '@server-driven-impact/postgres/pg';
 import { randomUUID } from 'node:crypto';
 import { createImpact } from '@server-driven-impact/runtime';
 import { compileManifest } from '@server-driven-impact/runtime';
-import { generateObserverMigration,postgresAdapter } from '@server-driven-impact/postgres';
+import { generateObserverMigration,identifier,postgresAdapter,sql } from '@server-driven-impact/postgres';
 import { ordersDomain } from './domain.js';
 
 const isLoopback=(value:string|undefined)=>{if(!value)return false;const hostname=new URL(value).hostname;return hostname==='127.0.0.1'||hostname==='localhost'||hostname==='[::1]';};
@@ -24,7 +24,8 @@ try {
   };
   const engine=createImpact({adapter:nodePool?pgAdapter({database:nodePool,setup}):postgresAdapter({database,setup}),...definitions}),context={scope:'pack-user'};
   await engine.validate();
-  const result=await engine.command(context,db=>db.insert('orders',[{id:'one',tenant_id:'pack-user',customer_id:'old',status:'ready',priority:1,note:null}]));
+  const orders=sql`${identifier(namespace)}.${identifier('orders')}`;
+  const result=await engine.command(context,db=>db.execute(sql`insert into ${orders}(id,tenant_id,customer_id,status,priority,note) values(${'one'},${'pack-user'},${'old'},${'ready'},${1},${null})`));
   if(!result.impact.targets.some(target=>target.endpoint==='orders.list'))throw new Error('MISSING_IMPACT');
   if((await engine.query('orders.list',{customer:'old'},context) as unknown[]).length!==1)throw new Error('MISSING_QUERY_RESULT');
   console.log(`Standalone ${nodePool?'pg':'postgres.js'} Query, Command, observer and impact passed.`);

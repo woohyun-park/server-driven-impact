@@ -51,10 +51,16 @@ export async function compilePostgresArtifacts(
   const resolved = await resolvePostgresResources(database, catalog.resources);
   const schemas = [...new Set([...Object.values(resolved).map(resource => resource.schema ?? 'public'), ...(catalog.schemas ?? []), ...(options.searchPath ?? ['public'])])].sort();
   const [semantics]=await database.unsafe(`select
-    exists(select 1 from pg_attribute a join pg_class c on c.oid=a.attrelid join pg_namespace n on n.oid=c.relnamespace join pg_type t on t.oid=a.atttypid
-      where a.attnum>0 and not a.attisdropped and n.nspname||'.'||c.relname=any($2::text[]) and t.typnamespace<>'pg_catalog'::regnamespace) or
-    exists(select 1 from pg_operator o where o.oprnamespace in (select oid from pg_namespace where nspname=any($1::text[]))) as custom`,[schemas,Object.values(resolved).map(resource=>(resource.schema ?? 'public')+'.'+resource.table)]);
-  if(semantics.custom)for(const [endpoint,query] of Object.entries(queries)){
+    array(select distinct n.nspname||'.'||c.relname from pg_attribute a join pg_class c on c.oid=a.attrelid join pg_namespace n on n.oid=c.relnamespace join pg_type t on t.oid=a.atttypid
+      where a.attnum>0 and not a.attisdropped and n.nspname||'.'||c.relname=any($2::text[]) and t.typnamespace<>'pg_catalog'::regnamespace) as custom_relations,
+    exists(select 1 from pg_operator o where o.oprnamespace in (select oid from pg_namespace where nspname=any($1::text[]))) as custom_operators`,[schemas,Object.values(resolved).map(resource=>(resource.schema ?? 'public')+'.'+resource.table)]);
+  const customRelations=new Set((semantics.custom_relations ?? []) as string[]);
+  for(const [endpoint,query] of Object.entries(queries)){
+    const usesCustomRelation=query.plan.kind==='postgres-query' && query.plan.reads.some(read=>{
+      const resource=resolved[read.resource];
+      return resource && customRelations.has((resource.schema ?? 'public')+'.'+resource.table);
+    });
+    if(!semantics.custom_operators && !usesCustomRelation)continue;
     if(definitions[endpoint].source.cache==='no-store')continue;
     if(definitions[endpoint].onUnresolved==='reject')throw new Error('UNRESOLVED_CUSTOM_TYPE_OR_OPERATOR');
     query.plan={...query.plan,cache:'no-store',reads:[]} as PostgresQueryPlan;

@@ -28,7 +28,7 @@ export type Plan =
   | SelectPlan
   | PostgresQueryPlan
   | { kind: 'value'; value: unknown }
-  | { kind: 'call'; endpoint: string; input: (input: Input) => Input }
+  | { kind: 'call'; endpoint: string; input?: (input: Input) => Input }
   | { kind: 'combine'; children: Record<string, Plan> }
   | { kind: 'when'; test: (input: Input) => boolean; yes: Plan; no: Plan }
   | { kind: 'bind'; parent: Plan; child: Plan; input: (data: unknown, input: Input) => Input | null }
@@ -62,7 +62,7 @@ export const q = {
   not(predicate: Predicate): Predicate { return { kind: 'not', predicate }; },
   count(resource: ResourceId, options: SelectOptions = {}): SelectPlan { return { kind: 'select', resource, options, result: 'count' }; },
   value(value: unknown): Plan { return { kind: 'value', value }; },
-  call(endpoint: string, input: (input: Input) => Input = (input) => input): Plan { return { kind: 'call', endpoint, input }; },
+  call(endpoint: string, input?: (input: Input) => Input): Plan { return { kind: 'call', endpoint, ...(input ? {input} : {}) }; },
   combine(children: Record<string, Plan>): Plan { return { kind: 'combine', children }; },
   when(test: (input: Input) => boolean, yes: Plan, no: Plan): Plan { return { kind: 'when', test, yes, no }; },
   bind(parent: Plan, child: Plan, input: (data: unknown, input: Input) => Input | null): Plan { return { kind: 'bind', parent, child, input }; },
@@ -138,7 +138,7 @@ export function compileManifest(queries: Record<string, QueryDefinition>, resour
       case 'postgres-query': return [...plan.reads];
       case 'value': return [];
       // Arbitrary input mapping cannot be inverted safely. Retain columns, widen inputs.
-      case 'call': return readsFor(queries[plan.endpoint].plan).map(r => ({ ...r, bindings: [] }));
+      case 'call': return readsFor(queries[plan.endpoint].plan).map(r => plan.input ? ({ ...r, bindings: [] }) : r);
       case 'bind': return [...readsFor(plan.parent), ...readsFor(plan.child).map(r => ({ ...r, bindings: [] }))];
       case 'map': return readsFor(plan.source);
       case 'combine': return Object.values(plan.children).flatMap(readsFor);
@@ -170,7 +170,7 @@ export async function executePlan(plan: Plan, input: Input, queries: Record<stri
     case 'call': {
       if (!Object.hasOwn(queries, plan.endpoint)) throw new Error(`Query missing: ${plan.endpoint}`);
       const query = queries[plan.endpoint];
-      return executePlan(query.plan, query.input.parse(plan.input(input)) as Input, queries, execute, resources);
+      return executePlan(query.plan, query.input.parse(plan.input ? plan.input(input) : input) as Input, queries, execute, resources);
     }
     case 'combine': {
       // One connection/snapshot; keep statements sequential rather than pretending parallel transactions.

@@ -2,47 +2,25 @@ import type { Pool, PoolClient, QueryResult } from 'pg';
 import { createRequire } from 'node:module';
 import { randomUUID } from 'node:crypto';
 import type { Scalar } from '@server-driven-impact/core';
-import type { CommandDb, ImpactAdapter, OperationsDb } from '@server-driven-impact/runtime/adapter';
+import type { ImpactAdapter } from '@server-driven-impact/runtime/adapter';
 import { postgresAdapter } from '../postgres/index.js';
-import type { PostgresWriteAccess } from '../postgres/write-access.js';
 import type { Sql } from '../postgres/sql.js';
 import type { PostgresSetupTransaction } from '../postgres/public-types.js';
 
 const require = createRequire(import.meta.url);
 export type PgTransaction = PostgresSetupTransaction;
-export interface PgRoutine {
-  schema?: string;
-  name: string;
-  arguments: readonly string[];
-}
 export type PgRow = Record<string, unknown>;
-export type PgPatch = Record<string, unknown | Sql>;
-export interface PgSqlDb {
+export interface PgCommandDb {
   readonly scope: Scalar;
   execute(statement: Sql): Promise<PgRow[]>;
-  copyFrom(statement: Sql, source: AsyncIterable<Uint8Array | string> | Iterable<Uint8Array | string>): Promise<void>;
+  copyFrom(statement: Sql, source: AsyncIterable<Uint8Array|string> | Iterable<Uint8Array|string>): Promise<void>;
   copyTo(statement: Sql): AsyncIterable<Uint8Array>;
   cursor(statement: Sql, batchSize?: number): AsyncIterable<PgRow[]>;
-  refreshMaterializedView(resource: string, options?: { concurrently?: boolean; withData?: boolean }): Promise<void>;
-  select(resource: string, where?: Sql, options?: { lock?: boolean; order?: Sql; limit?: number }): Promise<PgRow[]>;
-  require(resource: string, where: Sql, lock?: boolean): Promise<PgRow>;
-  lock(resource: string, where: Sql): Promise<void>;
-  insert(resource: string, rows: PgRow[], options?: { returnRows?: boolean; conflict?: { keys: string[]; patch?: PgPatch; where?: Sql } }): Promise<{ count: number; rows: PgRow[] }>;
-  insertSelect(resource: string, names: string[], source: Sql, options?: { returnRows?: boolean; conflict?: { keys: string[]; patch?: PgPatch; where?: Sql } }): Promise<{ count: number; rows: PgRow[] }>;
-  update(resource: string, patch: PgPatch, where: Sql, options?: { returnRows?: boolean; from?: Sql }): Promise<{ count: number; rows: PgRow[] }>;
-  delete(resource: string, where: Sql): Promise<{ count: number; rows: PgRow[] }>;
-  savepoint<T>(work: (db: PgSqlDb) => Promise<T>): Promise<T>;
-}
-export interface PgCommandDb extends CommandDb {
-  readonly postgres: PgSqlDb;
-  readonly operations: OperationsDb;
-  call(routine: string, args?: readonly unknown[]): Promise<unknown[]>;
+  refreshMaterializedView(resource: string, options?: {concurrently?:boolean;withData?:boolean}): Promise<void>;
   savepoint<T>(work: (db: PgCommandDb) => Promise<T>): Promise<T>;
 }
 export interface PgOptions {
   database: Pool;
-  writeAccess?: PostgresWriteAccess;
-  routines?: Readonly<Record<string, PgRoutine>>;
   setup?: (tx: PgTransaction, scope: Scalar) => Promise<void>;
   isolationLevel?: 'read uncommitted' | 'read committed' | 'repeatable read' | 'serializable';
   connectionMode?: 'direct' | 'session' | 'transaction';

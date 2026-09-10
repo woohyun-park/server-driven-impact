@@ -98,7 +98,7 @@ describe.skipIf(!enabled)('PostgreSQL release contract',()=>{
     const statements:string[]=[];
     const engine=createImpact({adapter:postgresAdapter({database:recordingDatabase(statements)}),resources:artifact.resources,queries:artifact.queries});
     await engine.query('read',{}, {scope:'a'});
-    await engine.command({scope:'a'},db=>db.postgres.execute(new Sql(`update "${schema}".a set value=value where id='one'`)));
+    await engine.command({scope:'a'},db=>db.execute(new Sql(`update "${schema}".a set value=value where id='one'`)));
     const catalogSql=/\bpg_(?:class|proc|trigger|policy|attribute|index)\b|observer_manifest/i;
     expect(statements.filter(text=>catalogSql.test(text))).toEqual([]);
     statements.length=0;
@@ -125,7 +125,7 @@ describe.skipIf(!enabled)('PostgreSQL release contract',()=>{
     const read=()=>Promise.all(texts.map((_,index)=>engine.query('q'+index,{id:'one'}, {scope:'a'})));
     const before=await read();
     for(let index=0;index<texts.length;index++)expect(before[index]).toEqual([...await database.unsafe(texts[index],texts[index].includes('$1')?['one']:[])]);
-    const changed=await engine.command({scope:'a'},db=>db.postgres.execute(sql`update ${identifier(schema)}.a set value=3 where id='one'`));
+    const changed=await engine.command({scope:'a'},db=>db.execute(sql`update ${identifier(schema)}.a set value=3 where id='one'`));
     const after=await read();
     for(let index=0;index<texts.length;index++){
       expect(after[index]).toEqual([...await database.unsafe(texts[index],texts[index].includes('$1')?['one']:[])]);
@@ -141,8 +141,8 @@ describe.skipIf(!enabled)('PostgreSQL release contract',()=>{
     });
     try {
       const changed=await engine.command({scope:'a'},async db=>{
-        await db.postgres.execute(new Sql(`insert into "${schema}".a select 'overflow-a-'||g,g from generate_series(1,201) g`));
-        await db.postgres.execute(new Sql(`insert into "${schema}".b values('overflow-b',1)`));
+        await db.execute(new Sql(`insert into "${schema}".a select 'overflow-a-'||g,g from generate_series(1,201) g`));
+        await db.execute(new Sql(`insert into "${schema}".b values('overflow-b',1)`));
       });
       expect(changed.impact.targets.map(target=>target.endpoint)).toEqual(['readA','readB']);
       expect(changed.impact.targets.every(target=>target.selector.kind==='all')).toBe(true);
@@ -164,10 +164,10 @@ describe.skipIf(!enabled)('PostgreSQL release contract',()=>{
     await expect(engine.query('session',{}, {scope:'a'})).rejects.toThrow('QUERY_REQUIRES_NO_STORE_EXECUTION');
     expect(await engine.queryUncached('session',{}, {scope:'a'})).toMatchObject({cachePolicy:'no-store'});
     await expect(engine.command({scope:'a'},async db=>{
-      await db.postgres.execute(new Sql(`select nextval('"${schema}".sequence_value')`));
+      await db.execute(new Sql(`select nextval('"${schema}".sequence_value')`));
       throw new Error('rollback sequence transaction');
     })).rejects.toThrow('rollback sequence transaction');
-    const next=await engine.command({scope:'a'},db=>db.postgres.execute(new Sql(`select nextval('"${schema}".sequence_value') as value`)));
+    const next=await engine.command({scope:'a'},db=>db.execute(new Sql(`select nextval('"${schema}".sequence_value') as value`)));
     expect(String(next.data[0].value)).toBe('2');
   });
 
@@ -181,7 +181,7 @@ describe.skipIf(!enabled)('PostgreSQL release contract',()=>{
     await expect(previous.engine.validate()).rejects.toThrow('POSTGRES_ARTIFACT_DRIFT');
     const engine=createImpact({adapter:adapter(),resources:next.resources,queries:next.queries});
     expect(await engine.query('routed',{}, {scope:'a'})).toEqual([{id:'one',value:10}]);
-    const changed=await engine.command({scope:'a'},db=>db.postgres.execute(sql`update ${identifier(schema)}.b set value=11 where id='one'`));
+    const changed=await engine.command({scope:'a'},db=>db.execute(sql`update ${identifier(schema)}.b set value=11 where id='one'`));
     expect(changed.impact.targets).toContainEqual({endpoint:'routed',scope:'global',selector:{kind:'all'}});
     await expect(migratePostgresQueries(admin,resources,definitions,{...options(),change:async tx=>{await tx.unsafe(`create or replace view "${schema}".routed as select * from "${schema}".a`);throw new Error('abort migration');}})).rejects.toThrow('abort migration');
     expect(await engine.query('routed',{}, {scope:'a'})).toEqual([{id:'one',value:11}]);
@@ -218,10 +218,10 @@ describe.skipIf(!enabled)('PostgreSQL release contract',()=>{
   it('prevents explicit transaction escape and DDL through the command SQL API',async()=>{
     const {engine}=await install({read:definition(`select * from "${schema}".a`)});
     for(const text of ['commit','rollback','prepare transaction \'escaped\'']){
-      await expect(engine.command({scope:'a'},db=>db.postgres.execute(new Sql(text)))).rejects.toThrow('COMMAND_TRANSACTION_CONTROL_FORBIDDEN');
+      await expect(engine.command({scope:'a'},db=>db.execute(new Sql(text)))).rejects.toThrow('COMMAND_TRANSACTION_CONTROL_FORBIDDEN');
     }
-    await expect(engine.command({scope:'a'},db=>db.postgres.execute(new Sql(`alter table "${schema}".a add column escaped text`)))).rejects.toThrow('COMMAND_REQUIRES_MIGRATION_API');
-    await expect(engine.command({scope:'a'},db=>db.postgres.copyFrom(new Sql(`copy "${schema}".a from stdin;commit`),[]))).rejects.toThrow('COMMAND_REQUIRES_ONE_STATEMENT');
+    await expect(engine.command({scope:'a'},db=>db.execute(new Sql(`alter table "${schema}".a add column escaped text`)))).rejects.toThrow('COMMAND_REQUIRES_MIGRATION_API');
+    await expect(engine.command({scope:'a'},db=>db.copyFrom(new Sql(`copy "${schema}".a from stdin;commit`),[]))).rejects.toThrow('COMMAND_REQUIRES_ONE_STATEMENT');
     expect(await engine.query('read',{}, {scope:'a'})).toHaveLength(2);
   });
 
@@ -229,20 +229,20 @@ describe.skipIf(!enabled)('PostgreSQL release contract',()=>{
     const {engine}=await install({read:definition(`select * from "${schema}".a order by id`)});
     let escaped:AsyncIterator<unknown>|undefined;
     await expect(engine.command({scope:'a'},async db=>{
-      escaped=db.postgres.cursor(sql`select * from ${identifier(schema)}.a`,1)[Symbol.asyncIterator]();
+      escaped=db.cursor(sql`select * from ${identifier(schema)}.a`,1)[Symbol.asyncIterator]();
       await escaped.next();
     })).rejects.toThrow('UNAWAITED_DATABASE_OPERATION');
     await expect(escaped!.next()).rejects.toThrow('WRITE_CONTEXT_CLOSED');
     expect(await engine.query('read',{}, {scope:'a'})).toHaveLength(2);
-    await engine.command({scope:'a'},async db=>{for await(const _batch of db.postgres.cursor(sql`select * from ${identifier(schema)}.a`,1))break;});
-    await expect(engine.command({scope:'a'},async db=>{for await(const _batch of db.postgres.cursor(sql`select 1/0`,1)){/* fetch must preserve SQLSTATE */}})).rejects.toMatchObject({code:'22012'});
+    await engine.command({scope:'a'},async db=>{for await(const _batch of db.cursor(sql`select * from ${identifier(schema)}.a`,1))break;});
+    await expect(engine.command({scope:'a'},async db=>{for await(const _batch of db.cursor(sql`select 1/0`,1)){/* fetch must preserve SQLSTATE */}})).rejects.toMatchObject({code:'22012'});
     expect(await engine.query('read',{}, {scope:'a'})).toHaveLength(2);
   });
 
   it('rolls back COPY source failures and preserves session usability',async()=>{
     const {engine}=await install({read:definition(`select * from "${schema}".a order by id`)});
     async function* source(){yield 'copy-abort\t9\n';throw new Error('source failed');}
-    await expect(engine.command({scope:'a'},db=>db.postgres.copyFrom(sql`copy ${identifier(schema)}.a(id,value) from stdin`,source()))).rejects.toThrow();
+    await expect(engine.command({scope:'a'},db=>db.copyFrom(sql`copy ${identifier(schema)}.a(id,value) from stdin`,source()))).rejects.toThrow();
     expect(await engine.query('read',{}, {scope:'a'})).toHaveLength(2);
   });
 
@@ -256,6 +256,22 @@ describe.skipIf(!enabled)('PostgreSQL release contract',()=>{
     expect(()=>postgresAdapter({database,connectionMode:'transaction'})).toThrow('POSTGRES_SESSION_CONNECTION_REQUIRED');
   });
 
+  it('limits custom-column fallback to endpoints that read the custom relation',async()=>{
+    await admin.unsafe(`create type "${schema}".state as enum('open','closed');
+      create table "${schema}".typed_relation(id text primary key,state "${schema}".state not null);
+      insert into "${schema}".typed_relation values('one','open');grant select on "${schema}".typed_relation to routine_runtime`);
+    const artifact=await compilePostgresArtifacts(admin,resources,{
+      regular:definition(`select * from "${schema}".a order by id`),
+      typed:definition(`select * from "${schema}".typed_relation order by id`),
+    },options());
+    expect(artifact.diagnostics.regular).toBeUndefined();
+    expect(artifact.diagnostics.typed).toBe('UNRESOLVED_CUSTOM_TYPE_OR_OPERATOR');
+    await admin.unsafe(generateObserverMigration(artifact.resources,artifact.manifest,{runtimeRole:'routine_runtime'}));
+    const engine=createImpact({adapter:adapter(),resources:artifact.resources,queries:artifact.queries});
+    await expect(engine.query('regular',{}, {scope:'a'})).resolves.toHaveLength(2);
+    await expect(engine.query('typed',{}, {scope:'a'})).rejects.toThrow('QUERY_REQUIRES_NO_STORE_EXECUTION');
+  });
+
   it('observes numeric scale and raw JSON text changes and routes MVCC columns to no-store',async()=>{
     await admin.unsafe(`create table "${schema}".typed(id text primary key,n numeric,j json);insert into "${schema}".typed values('one',1.0,'{"a":1}');grant select,update on "${schema}".typed to routine_runtime`);
     const typed={typed:{schema,table:'typed',idColumn:'id',scopeColumn:null,columns:['id','n','j']}} as const;
@@ -264,7 +280,7 @@ describe.skipIf(!enabled)('PostgreSQL release contract',()=>{
     await admin.unsafe(generateObserverMigration(artifact.resources,artifact.manifest,{runtimeRole:'routine_runtime'}));
     const engine=createImpact({adapter:adapter(),resources:artifact.resources,queries:artifact.queries});
     const before=await engine.query('text',{id:'one'}, {scope:'a'});
-    const changed=await engine.command({scope:'a'},db=>db.postgres.execute(new Sql(`update "${schema}".typed set n=1.00,j=' { "a" : 1 } '::json where id='one'`)));
+    const changed=await engine.command({scope:'a'},db=>db.execute(new Sql(`update "${schema}".typed set n=1.00,j=' { "a" : 1 } '::json where id='one'`)));
     const after=await engine.query('text',{id:'one'}, {scope:'a'});
     expect(after).not.toEqual(before);
     expect(changed.impact.targets).toContainEqual({endpoint:'text',scope:'global',selector:{kind:'all'}});

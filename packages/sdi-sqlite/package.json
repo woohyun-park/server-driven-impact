@@ -1,6 +1,6 @@
 {
   "name": "@server-driven-impact/sqlite",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "SQLite adapter for server-driven impact.",
   "type": "module",
   "license": "MIT",
@@ -16,7 +16,7 @@
     "prepack": "pnpm build",
     "typecheck": "tsc -p tsconfig.check.json"
   },
-  "peerDependencies": { "@server-driven-impact/core": "^0.1.0", "@server-driven-impact/runtime": "^0.1.0" },
+  "peerDependencies": { "@server-driven-impact/core": "^0.2.0", "@server-driven-impact/runtime": "^0.2.0" },
   "engines": { "node": ">=22.18" },
   "publishConfig": { "access": "public" },
   "repository": { "type": "git", "url": "git+https://github.com/woohyun-park/server-driven-impact.git", "directory": "packages/sdi-sqlite" },

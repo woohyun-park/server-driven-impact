@@ -38,4 +38,6 @@ console.log(calculateImpact(writes, { resources, manifest, scope: 'account-a' })
 
 For diagnostics, `createImpact({ resources, manifest })` creates a reusable calculator whose `explain(writes, scope)` method returns the same `ImpactSet` together with the decisions made by the exact calculation path. This method belongs to the core calculator; the runtime engine does not expose `explain()`.
 
+Consumers should use `matchesInputSelector()` for protocol-1 matching. It treats exact JSON scalar equality as a match and conservatively covers finite numeric string coercion and SQLite's built-in `NOCASE` and `RTRIM` behavior.
+
 Node.js 22.18 or newer is required.

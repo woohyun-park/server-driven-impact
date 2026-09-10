@@ -25,11 +25,19 @@ describe('language neutral conformance',()=>{
   }
 });
 describe('bounded facts and conservative impact',()=>{
-  it.each([null,false,true,0,19,'x'])('matches JSON scalar %s without conflating types',value=>{
+  it.each([null,false,true,0,19,'x'])('matches JSON scalar %s',value=>{
     const impact=engine.calculate([fact(value)],'a');
     expect(matchesInputSelector({filter:value},impact.targets[0].selector)).toBe(true);
     expect(matchesInputSelector({filter:typeof value==='string'?19:'different'},impact.targets[0].selector)).toBe(false);
     expect(matchesInputSelector({},impact.targets[0].selector)).toBe(true);
+  });
+  it('conservatively matches database numeric coercion and SQLite built-in collations',()=>{
+    const selector={kind:'inputs' as const,values:[{filter:1}]};
+    expect(matchesInputSelector({filter:'1'},selector)).toBe(true);
+    expect(matchesInputSelector({filter:'01'},selector)).toBe(true);
+    expect(matchesInputSelector({filter:'one'},selector)).toBe(false);
+    expect(matchesInputSelector({filter:'WORK'},{kind:'inputs',values:[{filter:'work'}]})).toBe(true);
+    expect(matchesInputSelector({filter:'work   '},{kind:'inputs',values:[{filter:'work'}]})).toBe(true);
   });
   it('unknown OLD widens but absent OLD does not; cross-tenant fields never escape',()=>{
     expect(engine.calculate([fact('old')],'b').targets).toEqual([]);
@@ -76,6 +84,12 @@ describe('bounded facts and conservative impact',()=>{
     const queries={source:{input:{parse:(v:unknown)=>v},plan:q.select('records',{columns:['value'],where:[q.eq('filter',q.input('filter'))],order:[{field:'sort'}]})},mapped:{input:{parse:(v:unknown)=>v},plan:q.call('source',()=>({filter:1}))}};
     const graph=compileManifest(queries,resources);
     expect(graph.reads.source[0].columns).toEqual(['filter','sort','value']);expect(graph.reads.mapped[0].bindings).toEqual([]);
+  });
+  it('preserves bindings through an identity call and widens an arbitrary call mapping',()=>{
+    const source={input:{parse:(v:unknown)=>v},plan:q.select('records',{where:[q.eq('filter',q.input('filter'))]})};
+    const graph=compileManifest({source,identity:{input:source.input,plan:q.call('source')},mapped:{input:source.input,plan:q.call('source',()=>({filter:1}))}},resources);
+    expect(graph.reads.identity[0].bindings).toEqual([{column:'filter',input:'filter'}]);
+    expect(graph.reads.mapped[0].bindings).toEqual([]);
   });
   it('keeps only input bindings guaranteed by every OR branch',()=>{
     const input={parse:(value:unknown)=>value};

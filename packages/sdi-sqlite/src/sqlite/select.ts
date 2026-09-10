@@ -64,7 +64,8 @@ export function compileSelect(plan: SelectPlan, input: Input, resources: Resourc
     const limit = pageValue(options.limit,input,'limit');
     const offset = pageValue(options.offset,input,'offset');
     const selected = countRoot ? 'count(*)' : valueSql;
-    return `SELECT ${selected} AS value FROM ${ident(definition.schema ?? 'main')}.${ident(definition.table)} ${alias}${where}${countRoot ? '' : order}${!countRoot && limit !== undefined ? ` LIMIT ${parameter(limit)}` : ''}${!countRoot && offset !== undefined ? ` OFFSET ${parameter(offset)}` : ''}`;
+    const pagination = countRoot ? '' : limit !== undefined ? ` LIMIT ${parameter(limit)}${offset !== undefined ? ` OFFSET ${parameter(offset)}` : ''}` : offset !== undefined ? ` LIMIT -1 OFFSET ${parameter(offset)}` : '';
+    return `SELECT ${selected} AS value FROM ${ident(definition.schema ?? 'main')}.${ident(definition.table)} ${alias}${where}${countRoot ? '' : order}${pagination}`;
   }
   return { text: render(plan.resource, plan.options), values };
 }
