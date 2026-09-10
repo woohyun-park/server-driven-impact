@@ -180,7 +180,7 @@ Each target contains an endpoint, a scope, and a selector:
 - `caller` is limited to the verified Command scope.
 - `global` applies to a Resource whose `scopeColumn` is `null`.
 
-Use `matchesInputSelector()` from `@server-driven-impact/core` when an application needs the reference selector-matching behavior.
+Use `matchesInputSelector()` from `@server-driven-impact/core` when an application needs the reference selector-matching behavior. It conservatively covers common database equality differences such as numeric string coercion and SQLite `NOCASE`/`RTRIM`; this may refresh extra cache entries but avoids missing an affected one.
 
 ## PostgreSQL adoption
 

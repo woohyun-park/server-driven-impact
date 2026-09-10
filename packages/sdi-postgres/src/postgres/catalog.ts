@@ -42,6 +42,8 @@ export async function validateCatalog(database: Transaction, resources: Resource
     const rows = await database.unsafe(`select c.oid::text as oid,c.relkind,c.relispartition,c.relhasrules,c.relrowsecurity,
       exists(select 1 from pg_inherits where inhrelid=c.oid or inhparent=c.oid) as inherited,
       array(select a.attname::text from pg_attribute a where a.attrelid=c.oid and a.attnum>0 and not a.attisdropped order by a.attname) as columns,
+      array(select a.attname::text from pg_attribute a join pg_collation coll on coll.oid=a.attcollation
+        where a.attrelid=c.oid and a.attnum>0 and not a.attisdropped and not coll.collisdeterministic order by a.attname) as nondeterministic_collations,
       array(select a.attname::text from pg_index i cross join lateral unnest(i.indkey) k join pg_attribute a on a.attrelid=c.oid and a.attnum=k where i.indrelid=c.oid and i.indisprimary) as pk
       from pg_class c join pg_namespace n on n.oid=c.relnamespace where n.nspname=$1 and c.relname=$2`,[r.schema ?? 'public',r.table]);
     const row=rows[0];
@@ -54,6 +56,9 @@ export async function validateCatalog(database: Transaction, resources: Resource
     } else if(r.physicalRelations) throw new Error(`RELATION_TOPOLOGY_DRIFT:${id}`);
     if (canonical([...row.pk].sort()) !== canonical([...identityColumns(r)].sort())) throw new Error(`IDENTITY_DRIFT:${id}`);
     if (canonical([...row.columns].sort()) !== canonical([...r.columns].sort())) throw new Error(`COLUMN_DRIFT:${id}`);
+    const boundColumns=new Set(Object.values(manifest?.reads ?? {}).flat().filter(read=>read.resource===id).flatMap(read=>read.bindings.map(binding=>binding.column)));
+    const unsupported=((row.nondeterministic_collations ?? []) as string[]).find((column:string)=>boundColumns.has(column));
+    if(unsupported)throw new Error(`UNSUPPORTED_SELECTOR_COLLATION:${id}:${unsupported}`);
     if (row.relrowsecurity) {
       const hidden=await database.unsafe(`select exists(
         select 1 from pg_policy policy

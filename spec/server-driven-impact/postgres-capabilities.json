@@ -166,6 +166,20 @@
       "mode": "native-text-comparison-and-no-store-system-columns",
       "implementation": "src/postgres/observer.ts",
       "fixture": "tests/postgres-release.integration.test.ts#observes numeric scale and raw JSON text changes and routes MVCC columns to no-store"
+    },
+    {
+      "id": "nondeterministic-selector-collation",
+      "status": "verified-rejection",
+      "mode": "validation-error",
+      "implementation": "packages/sdi-postgres/src/postgres/catalog.ts",
+      "fixture": "tests/postgres.integration.test.ts#rejects narrow selectors on nondeterministic collations during validation"
+    },
+    {
+      "id": "custom-column-endpoint-fallback",
+      "status": "verified",
+      "mode": "relation-scoped-no-store",
+      "implementation": "packages/sdi-postgres/src/postgres/artifact.ts",
+      "fixture": "tests/postgres-release.integration.test.ts#limits custom-column fallback to endpoints that read the custom relation"
     }
   ],
   "profile": "tracked-local-transactions-with-native-no-store-fallback"

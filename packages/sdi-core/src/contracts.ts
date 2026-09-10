@@ -46,7 +46,28 @@ export function matchesInputSelector(input: Record<string, unknown>, selector: u
   const s = selector as {kind?: unknown; values?: unknown};
   if (s.kind !== 'inputs' || !Array.isArray(s.values) || !s.values.length || s.values.length > LIMITS.selectors) return true;
   if (s.values.some(v => !v || typeof v !== 'object' || Array.isArray(v) || !Object.values(v).every(isScalar))) return true;
-  return s.values.some(v => Object.entries(v).every(([key,expected]) => !Object.hasOwn(input,key) || input[key] === expected));
+  return s.values.some(v => Object.entries(v).every(([key,expected]) => !Object.hasOwn(input,key) || scalarMayEqual(input[key],expected)));
+}
+function scalarMayEqual(actual: unknown, expected: unknown): boolean {
+  if (actual === expected) return true;
+  if (actual === null || expected === null) return false;
+  if (typeof actual === 'string' && typeof expected === 'string') {
+    // Cover SQLite's built-in NOCASE and RTRIM collations conservatively. ASCII
+    // folding deliberately matches more cache entries for non-ASCII strings.
+    const asciiFold = (value: string) => value.replace(/[A-Z]/g, char => char.toLowerCase());
+    return asciiFold(actual) === asciiFold(expected) || actual.replace(/ +$/,'') === expected.replace(/ +$/,'');
+  }
+  const numeric = (value: unknown): number | undefined => {
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+    if (typeof value !== 'string' || !value.trim()) return undefined;
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : undefined;
+  };
+  const left = numeric(actual), right = numeric(expected);
+  if (left !== undefined && right !== undefined && left === right) return true;
+  if (typeof actual === 'boolean' && typeof expected === 'string') return expected.toLowerCase() === String(actual);
+  if (typeof expected === 'boolean' && typeof actual === 'string') return actual.toLowerCase() === String(expected);
+  return false;
 }
 export function validateImpactResources(resources: ImpactResources): void {
   const entries = Object.entries(resources);

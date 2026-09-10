@@ -69,6 +69,8 @@ console.log(calculateImpact(writes, {
 - `createImpact()`: 검증된 계산기를 만들며 `calculate()`와 같은 계산 경로를 사용하는 `explain()` 결정 기록도 제공합니다.
 - `WriteSet`: transaction 동안 fact를 모으고 snapshot을 만드는 제한된 버퍼입니다.
 - `matchesInputSelector()`: 애플리케이션 입력이 target selector와 일치하는지 판정합니다.
+
+프로토콜 1 소비자는 `matchesInputSelector()`를 기준 구현으로 사용해야 합니다. 정확히 같은 JSON scalar뿐 아니라 유한 숫자와 숫자 문자열, SQLite 기본 `NOCASE`·`RTRIM` 비교도 보수적으로 일치시킵니다.
 - `canonical()`: 지원되는 JSON 값의 결정적 표현을 만듭니다.
 
 Node.js 22.18 이상이 필요합니다.

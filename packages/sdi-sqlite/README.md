@@ -46,4 +46,4 @@ database.close();
 
 The adapter observes structured writes, trusted native DML, triggers, foreign-key cascades, rollback, and savepoints inside the Command transaction. It uses connection-local TEMP observers, so share one adapter for each `DatabaseSync` connection.
 
-Version 0.1 supports Node's synchronous SQLite driver, the `main` database, ordinary tables with one primary-key column, and registered `TEXT`, `INTEGER`, or `REAL` columns. `ATTACH`, virtual tables, generated or hidden columns, `REPLACE`, transaction control, and DDL inside a Command are rejected. Node.js 22.18 or newer is required.
+Version 0.1 supports Node's synchronous SQLite driver, the `main` database, ordinary tables with one primary-key column, registered `TEXT`, `INTEGER`, or `REAL` columns, and SQLite's built-in `BINARY`, `NOCASE`, and `RTRIM` collations. `ATTACH`, virtual tables, generated or hidden columns, custom collations, `REPLACE` (including schema-level conflict policies), transaction control, and DDL inside a Command are rejected. Node.js 22.18 or newer is required.

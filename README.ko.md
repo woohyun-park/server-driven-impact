@@ -180,7 +180,7 @@ Command 콜백의 모든 작업은 반드시 `await`해야 합니다. 다른 연
 - `caller`는 검증된 Command scope로 제한됩니다.
 - `global`은 `scopeColumn`이 `null`인 Resource에 사용됩니다.
 
-애플리케이션에서 기준 selector 판정이 필요하면 `@server-driven-impact/core`의 `matchesInputSelector()`를 사용할 수 있습니다.
+애플리케이션에서 기준 selector 판정이 필요하면 `@server-driven-impact/core`의 `matchesInputSelector()`를 사용할 수 있습니다. 숫자 문자열 변환과 SQLite의 `NOCASE`·`RTRIM`처럼 DB 비교 방식이 다른 경우도 보수적으로 포함합니다. 일부 캐시를 더 갱신할 수는 있지만 영향받은 항목을 빠뜨리지는 않습니다.
 
 ## PostgreSQL 도입 순서
 

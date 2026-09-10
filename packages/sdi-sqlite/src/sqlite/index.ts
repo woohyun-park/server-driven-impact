@@ -27,6 +27,30 @@ function ident(name: string): string {
   if (!name || name.includes('\0')) throw new Error('INVALID_IDENTIFIER');
   return '"' + name.replaceAll('"','""') + '"';
 }
+function sqlTokens(text:string,requireSingleStatement=false):string[] {
+  const tokens:string[]=[];
+  let statementEnded=false;
+  for(let index=0;index<text.length;) {
+    const char=text[index],next=text[index+1];
+    if(/\s/.test(char)){index++;continue;}
+    if(char==='-'&&next==='-'){const end=text.indexOf('\n',index+2);index=end<0?text.length:end+1;continue;}
+    if(char==='/'&&next==='*'){const end=text.indexOf('*/',index+2);if(end<0)throw new Error('SQLITE_INVALID_SQL');index=end+2;continue;}
+    if(char===';'){statementEnded=true;index++;continue;}
+    if(requireSingleStatement&&statementEnded)throw new Error('SQLITE_SINGLE_STATEMENT_REQUIRED');
+    if(char==="'"){
+      index++;while(index<text.length){if(text[index]==="'"){if(text[index+1]==="'"){index+=2;continue;}index++;break;}index++;}continue;
+    }
+    if(char==='"'||char==='`'||char==='['){
+      const close=char==='['?']':char;let value='';index++;
+      while(index<text.length){if(text[index]===close){if(close!==']'&&text[index+1]===close){value+=close;index+=2;continue;}index++;break;}value+=text[index++];}
+      if(value)tokens.push(value.toUpperCase());continue;
+    }
+    const word=text.slice(index).match(/^[A-Za-z_][A-Za-z0-9_]*/)?.[0];
+    if(word){tokens.push(word.toUpperCase());index+=word.length;continue;}
+    index++;
+  }
+  return tokens;
+}
 function value(input: unknown): SQLInputValue {
   // SQLite returns INTEGER booleans as numbers. Require that explicit representation
   // rather than returning a falsely narrow boolean input selector.
@@ -43,6 +67,10 @@ function validateCatalog(database: DatabaseSync, resources: Resources): void {
     if (resource.schema && resource.schema !== 'main') throw new Error('SQLITE_MAIN_SCHEMA_ONLY');
     const entry = database.prepare("select type, sql from sqlite_schema where name=?").get(resource.table);
     if (!entry || entry.type !== 'table' || /CREATE\s+VIRTUAL\s+TABLE/i.test(String(entry.sql))) throw new Error('UNSUPPORTED_TABLE:' + id);
+    const schemaTokens=sqlTokens(String(entry.sql));
+    if (schemaTokens.some((token,index)=>token==='ON'&&schemaTokens[index+1]==='CONFLICT'&&schemaTokens[index+2]==='REPLACE')) throw new Error('SQLITE_SCHEMA_REPLACE_UNSUPPORTED:' + id);
+    const collations=schemaTokens.flatMap((token,index)=>token==='COLLATE'&&schemaTokens[index+1]?[schemaTokens[index+1]]:[]);
+    if (collations.some(name=>!['BINARY','NOCASE','RTRIM'].includes(name))) throw new Error('SQLITE_CUSTOM_COLLATION_UNSUPPORTED:' + id);
     const columns = database.prepare(`pragma table_xinfo(${ident(resource.table)})`).all();
     const pk = columns.filter(c => Number(c.pk) > 0);
     const identity = identityColumns(resource);
@@ -80,10 +108,11 @@ function installObservers(database:DatabaseSync,resources:Resources,manifest:Que
       database.exec(`drop trigger if exists temp.${name}`);
       const before=operation==='insert'?quoted(JSON.stringify({kind:'absent'})):stateSql('old',resource,fields);
       const after=operation==='delete'?quoted(JSON.stringify({kind:'absent'})):stateSql('new',resource,fields);
+      const differs=(column:string)=>`quote(old.${ident(column)}) collate binary is not quote(new.${ident(column)}) collate binary`;
       const changed=operation==='update'
-        ? `json_object(${resource.columns.flatMap(column=>[quoted(column),`old.${ident(column)} is not new.${ident(column)}`]).join(',')})`
+        ? `json_object(${resource.columns.flatMap(column=>[quoted(column),differs(column)]).join(',')})`
         :'null';
-      const when=operation==='update'?` when ${resource.columns.map(column=>`old.${ident(column)} is not new.${ident(column)}`).join(' or ')}`:'';
+      const when=operation==='update'?` when ${resource.columns.map(differs).join(' or ')}`:'';
       database.exec(`create temp trigger ${name} after ${operation} on main.${ident(resource.table)}${when} begin
         insert or ignore into ${ident(collectorResources)}(resource) values(${quoted(resourceId)});
         insert into ${ident(collectorTable)}(resource,operation,before_state,after_state,changed_columns)
@@ -119,11 +148,14 @@ function observedFacts(database:DatabaseSync):WriteFact[] {
   });
 }
 function assertNativeStatement(text:string) {
-  if(!text.trim() || text.includes('\0') || /;\s*\S/.test(text.replace(/;\s*$/,'')))throw new Error('SQLITE_SINGLE_STATEMENT_REQUIRED');
-  if(/^\s*(?:begin|commit|rollback|savepoint|release|attach|detach|pragma|vacuum|create|alter|drop)\b/i.test(text))throw new Error('SQLITE_TRANSACTION_OR_DDL_FORBIDDEN');
+  if(!text.trim() || text.includes('\0'))throw new Error('SQLITE_SINGLE_STATEMENT_REQUIRED');
+  let tokens:string[];
+  try{tokens=sqlTokens(text,true);}catch(error){if(error instanceof Error&&error.message==='SQLITE_SINGLE_STATEMENT_REQUIRED')throw error;throw new Error('SQLITE_SINGLE_STATEMENT_REQUIRED',{cause:error});}
+  if(!tokens.length)throw new Error('SQLITE_SINGLE_STATEMENT_REQUIRED');
+  if(['BEGIN','COMMIT','END','ROLLBACK','SAVEPOINT','RELEASE','ATTACH','DETACH','PRAGMA','VACUUM','CREATE','ALTER','DROP'].includes(tokens[0]))throw new Error('SQLITE_TRANSACTION_OR_DDL_FORBIDDEN');
   // SQLite may omit DELETE triggers for REPLACE unless recursive_triggers is on.
   // Reject it instead of silently losing the OLD selector membership.
-  if(/\binsert\s+or\s+replace\b/i.test(text) || /^\s*replace\b/i.test(text))throw new Error('SQLITE_REPLACE_UNSUPPORTED');
+  if(tokens[0]==='REPLACE' || tokens.some((token,index)=>token==='INSERT'&&tokens[index+1]==='OR'&&tokens[index+2]==='REPLACE'))throw new Error('SQLITE_REPLACE_UNSUPPORTED');
 }
 
 export function sqliteAdapter(options: SqliteOptions): ImpactAdapter<SqliteCommandDb> {
@@ -169,11 +201,17 @@ export function sqliteAdapter(options: SqliteOptions): ImpactAdapter<SqliteComma
             table(resource);
             if (options.returnRows && rows.length > LIMITS.facts) throw new Error('USE_BATCH_WRITE_WITHOUT_ROWS');
             const returned: DataRow[] = [];
+            let statement: ReturnType<DatabaseSync['prepare']> | undefined;
+            let expectedNames: string[] | undefined;
             for (const row of rows) {
               const names = Object.keys(row);
               if (!names.length || names.some(c => !resources[resource].columns.includes(c))) throw new Error('UNREGISTERED_COLUMN');
-              const result = database.prepare(`insert into ${table(resource)} (${names.map(ident).join(',')}) values (${names.map(() => '?').join(',')}) returning *`).get(...names.map(c => value(row[c])))!;
-              if (options.returnRows) returned.push({ ...result });
+              if (expectedNames && canonical(names) !== canonical(expectedNames)) throw new Error('BATCH_COLUMNS_MUST_MATCH');
+              expectedNames ??= names;
+              statement ??= database.prepare(`insert into ${table(resource)} (${names.map(ident).join(',')}) values (${names.map(() => '?').join(',')})${options.returnRows ? ' returning *' : ''}`);
+              const values=names.map(c => value(row[c]));
+              if (options.returnRows) returned.push({ ...statement.get(...values)! });
+              else statement.run(...values);
             }
             return { count: rows.length, rows: returned };
           },

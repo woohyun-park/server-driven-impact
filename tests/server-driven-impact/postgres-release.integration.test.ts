@@ -256,6 +256,22 @@ describe.skipIf(!enabled)('PostgreSQL release contract',()=>{
     expect(()=>postgresAdapter({database,connectionMode:'transaction'})).toThrow('POSTGRES_SESSION_CONNECTION_REQUIRED');
   });
 
+  it('limits custom-column fallback to endpoints that read the custom relation',async()=>{
+    await admin.unsafe(`create type "${schema}".state as enum('open','closed');
+      create table "${schema}".typed_relation(id text primary key,state "${schema}".state not null);
+      insert into "${schema}".typed_relation values('one','open');grant select on "${schema}".typed_relation to routine_runtime`);
+    const artifact=await compilePostgresArtifacts(admin,resources,{
+      regular:definition(`select * from "${schema}".a order by id`),
+      typed:definition(`select * from "${schema}".typed_relation order by id`),
+    },options());
+    expect(artifact.diagnostics.regular).toBeUndefined();
+    expect(artifact.diagnostics.typed).toBe('UNRESOLVED_CUSTOM_TYPE_OR_OPERATOR');
+    await admin.unsafe(generateObserverMigration(artifact.resources,artifact.manifest,{runtimeRole:'routine_runtime'}));
+    const engine=createImpact({adapter:adapter(),resources:artifact.resources,queries:artifact.queries});
+    await expect(engine.query('regular',{}, {scope:'a'})).resolves.toHaveLength(2);
+    await expect(engine.query('typed',{}, {scope:'a'})).rejects.toThrow('QUERY_REQUIRES_NO_STORE_EXECUTION');
+  });
+
   it('observes numeric scale and raw JSON text changes and routes MVCC columns to no-store',async()=>{
     await admin.unsafe(`create table "${schema}".typed(id text primary key,n numeric,j json);insert into "${schema}".typed values('one',1.0,'{"a":1}');grant select,update on "${schema}".typed to routine_runtime`);
     const typed={typed:{schema,table:'typed',idColumn:'id',scopeColumn:null,columns:['id','n','j']}} as const;

@@ -130,11 +130,13 @@ describe('unified API / actual SQLite', () => {
         ]}),
       },
       page:{input,plan:q.select('orders',{columns:['id'],order:[{field:'id'}],limit:q.input('size'),offset:q.input('offset')})},
+      offsetOnly:{input,plan:q.select('orders',{columns:['id'],order:[{field:'id'}],offset:q.input('offset')})},
     });
     const engine=createImpact({adapter,resources,queries});
     await engine.command(context,db=>db.insert('orders',[order('a'),order('b'),order('c')]));
     expect(await engine.query('count',{},context)).toBe(3);
     expect(await engine.query('page',{size:1,offset:1},context)).toEqual([{id:'b'}]);
+    expect(await engine.query('offsetOnly',{offset:1},context)).toEqual([{id:'b'},{id:'c'}]);
     await expect(engine.query('page',{size:0,offset:0},context)).rejects.toThrow('Invalid query limit');
   });
   it('includes unexecuted branches and snapshots the registered plans', async () => {
@@ -181,7 +183,34 @@ describe('unified API / actual SQLite', () => {
     expect(includes(moved.impact,'orders.detail',{id:'old'})).toBe(true);
     expect(includes(moved.impact,'orders.detail',{id:'new'})).toBe(true);
     await expect(engine.command(context,db=>db.sqlite.execute('commit'))).rejects.toThrow('SQLITE_TRANSACTION_OR_DDL_FORBIDDEN');
+    await expect(engine.command(context,db=>db.sqlite.execute('/* harmless-looking prefix */ COMMIT'))).rejects.toThrow('SQLITE_TRANSACTION_OR_DDL_FORBIDDEN');
+    await expect(engine.command(context,db=>db.sqlite.execute("insert into orders(id,tenant_id,customer_id,status,priority,note) values('escape','a','first','ready',1,null); commit"))).rejects.toThrow('SQLITE_SINGLE_STATEMENT_REQUIRED');
+    await expect(engine.command(context,db=>db.sqlite.execute("update orders set note='contains;semicolon' where id='new'"))).resolves.toBeDefined();
     await expect(engine.command(context,db=>db.sqlite.execute("insert or replace into orders(id,tenant_id,customer_id,status,priority,note) values('new','a','second','ready',1,null)"))).rejects.toThrow('SQLITE_REPLACE_UNSUPPORTED');
+  });
+  it('matches numeric affinity and NOCASE result changes conservatively',async()=>{
+    const database=new DatabaseSync(':memory:');databases.push(database);
+    database.exec('create table values_table(id text primary key,tenant text,number_value integer,label text collate nocase)');
+    const resources={values:{schema:'main',table:'values_table',idColumn:'id',scopeColumn:'tenant',columns:['id','tenant','number_value','label']}};
+    const input={parse:(value:unknown)=>value as Record<string,unknown>};
+    const queries=defineQueries({
+      number:{input,plan:q.select('values',{where:[q.eq('number_value',q.input('value'))]})},
+      label:{input,plan:q.select('values',{where:[q.eq('label',q.input('value'))]})},
+    });
+    const engine=createImpact({adapter:sqliteAdapter({database}),resources,queries});
+    await engine.validate();
+    const inserted=await engine.command(context,db=>db.insert('values',[{id:'one',tenant:'a',number_value:1,label:'work'}]));
+    expect(includes(inserted.impact,'number',{value:'1'})).toBe(true);
+    expect(includes(inserted.impact,'label',{value:'WORK'})).toBe(true);
+    const changed=await engine.command(context,db=>db.update('values',{where:{id:'one'},set:{label:'WORK'}}));
+    expect(changed.impact.targets.map(target=>target.endpoint)).toContain('label');
+  });
+  it('rejects schema-level REPLACE policies that can hide the deleted row',async()=>{
+    const database=new DatabaseSync(':memory:');databases.push(database);
+    database.exec('create table unsafe(id text primary key on conflict replace,tenant text,value text)');
+    const resources={unsafe:{schema:'main',table:'unsafe',idColumn:'id',scopeColumn:'tenant',columns:['id','tenant','value']}};
+    const engine=createImpact({adapter:sqliteAdapter({database}),resources,queries:defineQueries({all:{input:{parse:()=>({})},plan:q.select('unsafe')}})});
+    await expect(engine.validate()).rejects.toThrow('SQLITE_SCHEMA_REPLACE_UNSUPPORTED:unsafe');
   });
   it('runs without implicit validation and performs fresh SQLite validation only when requested',async()=>{
     const {engine,database}=fixture();
