@@ -1,0 +1,41 @@
+{
+  "name": "server-driven-impact",
+  "version": "0.1.1",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.33.0",
+  "scripts": {
+    "changeset": "changeset",
+    "build": "pnpm --filter './packages/sdi-*' -r build",
+    "typecheck": "pnpm build && pnpm --filter './packages/sdi-*' -r typecheck && tsc -p tsconfig.json",
+    "test": "pnpm build && vitest run --config sdi.vitest.config.ts",
+    "test:postgres": "node scripts/backend/run-sdi-postgres-tests.mjs",
+    "test:matrix": "node scripts/backend/run-sdi-postgres-matrix.mjs",
+    "pack:check": "node scripts/backend/check-sdi-pack.mjs",
+    "build:sdi": "pnpm build",
+    "typecheck:sdi": "pnpm typecheck",
+    "test:sdi": "pnpm test",
+    "test:sdi:postgres": "pnpm test:postgres",
+    "test:sdi:matrix": "pnpm test:matrix",
+    "check:sdi:pack": "pnpm pack:check",
+    "release:sdi:version": "changeset version",
+    "release:sdi:publish": "node scripts/backend/publish-sdi.mjs"
+  },
+  "dependencies": {
+    "@server-driven-impact/core": "workspace:^",
+    "@server-driven-impact/postgres": "workspace:^",
+    "@server-driven-impact/runtime": "workspace:^"
+  },
+  "devDependencies": {
+    "@changesets/cli": "3.0.2",
+    "@server-driven-impact/sqlite": "workspace:^",
+    "@types/node": "25.9.1",
+    "@types/pg": "8.15.5",
+    "ajv": "8.17.1",
+    "pg": "8.16.3",
+    "pg-copy-streams": "7.0.0",
+    "postgres": "3.4.8",
+    "typescript": "6.0.3",
+    "vitest": "4.1.7"
+  }
+}

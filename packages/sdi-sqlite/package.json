@@ -1,0 +1,27 @@
+{
+  "name": "@server-driven-impact/sqlite",
+  "version": "0.1.1",
+  "description": "SQLite adapter for server-driven impact.",
+  "type": "module",
+  "license": "MIT",
+  "sideEffects": false,
+  "types": "./dist/sqlite/index.d.ts",
+  "module": "./dist/sqlite/index.js",
+  "files": ["dist", "README.md", "CHANGELOG.md", "LICENSE"],
+  "exports": {
+    ".": { "types": "./dist/sqlite/index.d.ts", "import": "./dist/sqlite/index.js" }
+  },
+  "scripts": {
+    "build": "node ../../scripts/backend/clean-sdi-package.mjs && tsc -p tsconfig.json && node ../../scripts/backend/annotate-sdi-package.mjs",
+    "prepack": "pnpm build",
+    "typecheck": "tsc -p tsconfig.check.json"
+  },
+  "peerDependencies": { "@server-driven-impact/core": "^0.1.0", "@server-driven-impact/runtime": "^0.1.0" },
+  "engines": { "node": ">=22.18" },
+  "publishConfig": { "access": "public" },
+  "repository": { "type": "git", "url": "git+https://github.com/woohyun-park/server-driven-impact.git", "directory": "packages/sdi-sqlite" },
+  "homepage": "https://github.com/woohyun-park/server-driven-impact/tree/main/packages/sdi-sqlite#readme",
+  "bugs": { "url": "https://github.com/woohyun-park/server-driven-impact/issues" },
+  "keywords": ["cache", "invalidation", "impact", "sqlite"],
+  "devDependencies": { "@server-driven-impact/core": "workspace:^", "@server-driven-impact/runtime": "workspace:^", "@types/node": "25.9.1", "typescript": "6.0.3" }
+}

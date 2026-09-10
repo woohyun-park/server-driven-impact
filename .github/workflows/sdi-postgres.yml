@@ -1,0 +1,84 @@
+name: SDI PostgreSQL compatibility
+
+on:
+  pull_request:
+    paths:
+      - 'packages/sdi-*/**'
+      - 'tests/server-driven-impact/**'
+      - 'sdi.*'
+      - 'scripts/backend/run-sdi-postgres-tests.mjs'
+      - 'scripts/backend/run-sdi-postgres-matrix.mjs'
+      - 'spec/server-driven-impact/**'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - '.github/workflows/sdi-postgres.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'packages/sdi-*/**'
+      - 'tests/server-driven-impact/**'
+      - 'sdi.*'
+      - 'scripts/backend/run-sdi-postgres-tests.mjs'
+      - 'scripts/backend/run-sdi-postgres-matrix.mjs'
+      - 'spec/server-driven-impact/**'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - '.github/workflows/sdi-postgres.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  conformance:
+    name: PostgreSQL ${{ matrix.major }} / ${{ matrix.driver }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        major: [14, 15, 16, 17, 18]
+        driver: [postgres, pg]
+        include:
+          - { major: 14, image: '14.24@sha256:156f0b253fd61366d5fc2107ad45955027d5612f695a8436ce20167f3fa79bff' }
+          - { major: 15, image: '15.19@sha256:9b1d34adbce1dd07ee6e94b4a2cf698884b89bd44a6c9c12f5da8f3acbfe4957' }
+          - { major: 16, image: '16.15@sha256:f1c3376c26f2609ab9f29f71f824103fe2fcd8ee0346485cb6122a4f93df6f94' }
+          - { major: 17, image: '17.11@sha256:67f41722b7a8cbdb868a44a4995c846eddfdc2973bccb291ce937dce88ad5675' }
+          - { major: 18, image: '18.6@sha256:4ef4dbc939d61acea57712655ddb4b4ab27419c913f94cca0cd57cb3ea3c2280' }
+    services:
+      postgres:
+        image: postgres:${{ matrix.image }}
+        env:
+          POSTGRES_DB: sdi
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_USER: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d sdi"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      SDI_POSTGRES_ADMIN_URL: postgresql://postgres:postgres@127.0.0.1:5432/sdi
+      SDI_POSTGRES_RUNTIME_URL: postgresql://routine_runtime:runtime@127.0.0.1:5432/sdi
+      SDI_POSTGRES_MAJOR: ${{ matrix.major }}
+      SDI_POSTGRES_DRIVER: ${{ matrix.driver }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Create the NOBYPASSRLS runtime role
+        env:
+          PGPASSWORD: postgres
+        run: >-
+          psql -h 127.0.0.1 -U postgres -d sdi -v ON_ERROR_STOP=1
+          -c "create role routine_runtime login password 'runtime' nobypassrls"
+      - run: pnpm typecheck:sdi
+      - run: pnpm test:sdi:postgres

@@ -1,0 +1,29 @@
+{
+  "name": "@server-driven-impact/runtime",
+  "version": "0.1.1",
+  "description": "Backend query and command runtime for server-driven impact.",
+  "type": "module",
+  "license": "MIT",
+  "sideEffects": false,
+  "types": "./dist/index.d.ts",
+  "module": "./dist/index.js",
+  "files": ["dist", "README.md", "CHANGELOG.md", "LICENSE"],
+  "exports": {
+    ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" },
+    "./adapter": { "types": "./dist/runtime/adapter.d.ts", "import": "./dist/runtime/adapter.js" },
+    "./debug": { "types": "./dist/debug/index.d.ts", "import": "./dist/debug/index.js" }
+  },
+  "scripts": {
+    "build": "node ../../scripts/backend/clean-sdi-package.mjs && tsc -p tsconfig.json && node ../../scripts/backend/annotate-sdi-package.mjs",
+    "prepack": "pnpm build",
+    "typecheck": "tsc -p tsconfig.check.json"
+  },
+  "dependencies": { "@server-driven-impact/core": "workspace:^" },
+  "engines": { "node": ">=22.18" },
+  "publishConfig": { "access": "public" },
+  "repository": { "type": "git", "url": "git+https://github.com/woohyun-park/server-driven-impact.git", "directory": "packages/sdi-runtime" },
+  "homepage": "https://github.com/woohyun-park/server-driven-impact/tree/main/packages/sdi-runtime#readme",
+  "bugs": { "url": "https://github.com/woohyun-park/server-driven-impact/issues" },
+  "keywords": ["backend", "cache", "database", "invalidation", "impact"],
+  "devDependencies": { "@types/node": "25.9.1", "typescript": "6.0.3" }
+}

@@ -1,0 +1,77 @@
+{
+  "resources": {
+    "records": {
+      "table": "records",
+      "idColumn": "id",
+      "scopeColumn": "tenant",
+      "columns": [
+        "id",
+        "tenant",
+        "filter",
+        "value"
+      ],
+      "selectorColumns": [
+        "id",
+        "filter"
+      ]
+    }
+  },
+  "manifest": {
+    "protocolVersion": 1,
+    "reads": {
+      "list": [
+        {
+          "resource": "records",
+          "columns": [
+            "filter",
+            "value"
+          ],
+          "bindings": [
+            {
+              "column": "filter",
+              "input": "filter"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "scope": "a",
+  "writes": [
+    {
+      "resource": "records",
+      "operation": "insert",
+      "before": {
+        "kind": "absent"
+      },
+      "after": {
+        "kind": "known",
+        "scope": "a",
+        "fields": {
+          "filter": false
+        }
+      },
+      "changedColumns": null
+    }
+  ],
+  "impact": {
+    "protocolVersion": 1,
+    "targets": [
+      {
+        "endpoint": "list",
+        "scope": "caller",
+        "selector": {
+          "kind": "inputs",
+          "values": [
+            {
+              "filter": false
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "reasons": [
+    "matched"
+  ]
+}

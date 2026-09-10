@@ -1,0 +1,172 @@
+{
+  "schemaVersion": 1,
+  "verifiedAt": "2026-09-08",
+  "postgres": {
+    "majors": [
+      14,
+      15,
+      16,
+      17,
+      18
+    ],
+    "connectionMode": "direct-or-session-pool",
+    "drivers": [
+      "postgres@3.4.8",
+      "pg@8.16.3"
+    ]
+  },
+  "capabilities": [
+    {
+      "id": "native-dml",
+      "status": "verified",
+      "mode": "observed-transaction",
+      "fixture": "tests/postgres.integration.test.ts#executes native PostgreSQL DML unchanged on the observed transaction"
+    },
+    {
+      "id": "self-join-read-paths",
+      "status": "verified",
+      "mode": "narrow-selector",
+      "fixture": "tests/postgres.integration.test.ts#does not miss self-join, untracked function reads, or non-row freshness dependencies"
+    },
+    {
+      "id": "views-sql-functions-rls",
+      "status": "verified",
+      "mode": "catalog-expanded-broad-selector",
+      "fixture": "tests/postgres.integration.test.ts#expands nested view and RLS helper dependencies through the catalog"
+    },
+    {
+      "id": "untracked-relation",
+      "status": "verified-rejection",
+      "mode": "activation-error",
+      "fixture": "tests/postgres.integration.test.ts#does not miss self-join, untracked function reads, or non-row freshness dependencies"
+    },
+    {
+      "id": "time-random-sequence-session-dependency",
+      "status": "verified",
+      "mode": "explicit-no-store-or-command",
+      "fixture": "tests/postgres-release.integration.test.ts#preserves sequence rollback semantics and keeps session state out of cached queries"
+    },
+    {
+      "id": "partition-and-inheritance",
+      "status": "verified",
+      "mode": "catalog-resolved-physical-observers",
+      "fixture": "tests/postgres.integration.test.ts#observes parent and direct-leaf partition and inheritance writes as one logical resource"
+    },
+    {
+      "id": "copy-and-transaction-cursor",
+      "status": "verified",
+      "mode": "guarded-session",
+      "fixture": "tests/postgres.integration.test.ts#keeps COPY and cursor protocols inside the guarded physical session"
+    },
+    {
+      "id": "materialized-view-refresh",
+      "status": "verified",
+      "mode": "explicit-refresh",
+      "fixture": "tests/postgres.integration.test.ts#marks a materialized view only after its refresh succeeds"
+    },
+    {
+      "id": "transaction-pooling",
+      "status": "unsupported",
+      "mode": "direct-or-session-connection-required"
+    },
+    {
+      "id": "external-state-fdw-dblink-http",
+      "status": "unsupported",
+      "mode": "uncached-or-provider-observer-required"
+    },
+    {
+      "id": "autonomous-procedure-and-2pc",
+      "status": "unsupported",
+      "mode": "separate-protocol-required"
+    },
+    {
+      "id": "pg-driver",
+      "status": "verified",
+      "mode": "same-29-fixture-major-matrix",
+      "fixture": "tests/postgres-release.integration.test.ts#preserves each driver native types, duplicate rows and SQLSTATE without normalizing IDs"
+    },
+    {
+      "id": "automatic-unregistered-relation-observation",
+      "status": "verified",
+      "mode": "explicit-global-catalog-discovery",
+      "fixture": "tests/postgres.integration.test.ts#does not miss self-join, untracked function reads, or non-row freshness dependencies"
+    },
+    {
+      "id": "no-store-composition",
+      "status": "verified",
+      "mode": "release-contract",
+      "implementation": "src/postgres/artifact.ts",
+      "fixture": "tests/postgres-release.integration.test.ts#executes time, randomness and dynamic SQL only through the no-store API, including composed endpoints"
+    },
+    {
+      "id": "native-query-oracle",
+      "status": "verified",
+      "mode": "release-contract",
+      "implementation": "src/postgres/query-compiler.ts",
+      "fixture": "tests/postgres-release.integration.test.ts#compares native and SDI results across joins, anti joins, sets, recursion, windows and page boundaries"
+    },
+    {
+      "id": "atomic-query-recompilation",
+      "status": "verified",
+      "mode": "release-contract",
+      "implementation": "src/postgres/migration.ts",
+      "fixture": "tests/postgres-release.integration.test.ts#recompiles changed views atomically, explicitly detects old artifacts and observes the new dependency"
+    },
+    {
+      "id": "catalog-definition-drift",
+      "status": "verified",
+      "mode": "release-contract",
+      "implementation": "src/postgres/catalog-fingerprint.ts",
+      "fixture": "tests/postgres-release.integration.test.ts#detects function-only and permission-only drift when explicitly validated"
+    },
+    {
+      "id": "schema-lock-snapshot",
+      "status": "verified",
+      "mode": "release-contract",
+      "implementation": "src/postgres/session.ts",
+      "fixture": "tests/postgres-release.integration.test.ts#validates against the post-migration catalog snapshot after waiting for its lock"
+    },
+    {
+      "id": "cursor-cleanup",
+      "status": "verified",
+      "mode": "release-contract",
+      "implementation": "src/postgres/../runtime/guard.ts",
+      "fixture": "tests/postgres-release.integration.test.ts#closes abandoned and partially consumed cursors before rolling back and reusing a one-connection pool"
+    },
+    {
+      "id": "copy-failure-recovery",
+      "status": "verified",
+      "mode": "release-contract",
+      "implementation": "src/postgres/tracked-db.ts",
+      "fixture": "tests/postgres-release.integration.test.ts#rolls back COPY source failures and preserves session usability"
+    },
+    {
+      "id": "command-transaction-boundary",
+      "status": "verified",
+      "mode": "release-contract",
+      "implementation": "src/postgres/command-sql.ts",
+      "fixture": "tests/postgres-release.integration.test.ts#prevents explicit transaction escape and DDL through the command SQL API"
+    },
+    {
+      "id": "custom-type-fallback",
+      "status": "verified",
+      "mode": "release-contract",
+      "implementation": "src/postgres/artifact.ts",
+      "fixture": "tests/postgres-release.integration.test.ts#routes custom type semantics to native no-store execution and rejects transaction pooling at activation"
+    },
+    {
+      "id": "commit-outcome-recovery",
+      "status": "verified",
+      "mode": "fault-injection-and-cache-retirement",
+      "fixture": "tests/write-access.test.ts#preserves committed data when collection fails and discards the failed session without retrying"
+    },
+    {
+      "id": "native-representation-and-mvcc",
+      "status": "verified",
+      "mode": "native-text-comparison-and-no-store-system-columns",
+      "implementation": "src/postgres/observer.ts",
+      "fixture": "tests/postgres-release.integration.test.ts#observes numeric scale and raw JSON text changes and routes MVCC columns to no-store"
+    }
+  ],
+  "profile": "tracked-local-transactions-with-native-no-store-fallback"
+}
