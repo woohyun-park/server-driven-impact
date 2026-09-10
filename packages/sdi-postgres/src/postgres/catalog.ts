@@ -1,7 +1,8 @@
 import type { Transaction } from './tracked-db.js';
 import { canonical } from '@server-driven-impact/core';
 import { identityColumns, type QueryManifest, type Resources } from '@server-driven-impact/runtime/adapter';
-import { createPostgresCatalogResolver } from './catalog-resolver.js';
+import { createPostgresCatalogResolver, type CatalogPolicyDependency } from './catalog-resolver.js';
+import { catalogFingerprint } from './catalog-fingerprint.js';
 
 type PhysicalRelation = { schema: string; table: string };
 
@@ -39,7 +40,31 @@ export async function validateCatalog(database: Transaction, resources: Resource
   // This pass verifies that RLS does not hide row dependencies from the
   // manifest. Session/time values are handled when the Query itself is
   // compiled; they are not relations that need observers here.
-  const resolver=manifest ? createPostgresCatalogResolver(database,resources,{nonRowDependencies:'ignore'}) : undefined;
+  const stamp=manifest?.postgres?.catalog;
+  if(stamp && await catalogFingerprint(database,stamp.schemas)!==stamp.fingerprint)throw new Error('POSTGRES_ARTIFACT_DRIFT');
+  const [server]=await database.unsafe("select current_setting('server_version_num')::int as version");
+  const parserVersion=Math.floor(Number(server.version)/10000) as 14|15|16|17|18;
+  const resolver=createPostgresCatalogResolver(database,resources,{nonRowDependencies:'ignore',parserVersion});
+  function verify(id:string,reads:QueryManifest['reads'][string],dependencies:readonly CatalogPolicyDependency[]):void {
+    for(const dependency of dependencies){
+      const resource=resources[dependency.resource];
+      if(!resource || !reads.some(read=>read.resource===dependency.resource))throw new Error(`UNRESOLVED_RLS_DEPENDENCY:${id}`);
+      const candidates=reads.filter(read=>read.resource===dependency.resource);
+      if(dependency.rowConstraint==='all'){
+        unsafeEqualityResources.add(dependency.resource);
+        if(resource.scopeColumn!==null)throw new Error(`UNRESOLVED_RLS_SCOPE_DEPENDENCY:${id}`);
+        if(!candidates.some(read=>read.bindings.length===0 && (read.columns==='*' || dependency.columns!=='*' && dependency.columns.every(column=>read.columns.includes(column)))))throw new Error(`UNRESOLVED_RLS_COLUMN_DEPENDENCY:${id}`);
+      }else {
+        const covers=(read:typeof candidates[number])=>read.columns==='*' || dependency.columns!=='*' && dependency.columns.every(column=>column===resource.scopeColumn || read.columns.includes(column));
+        if(!candidates.some(read=>read.bindings.length===0 && !(read.filters?.length) && covers(read)) && !candidates.every(covers))throw new Error(`UNRESOLVED_RLS_COLUMN_DEPENDENCY:${id}`);
+      }
+    }
+  }
+  if(stamp)for(const [endpoint,proofs] of Object.entries(manifest?.postgres?.policyProofs ?? {})){
+    const reads=manifest?.reads[endpoint];
+    if(!reads)throw new Error('UNRESOLVED_RLS_DEPENDENCY');
+    for(const proof of proofs)verify(endpoint,reads,proof.dependencies);
+  }
   for (const [id,r] of Object.entries(resources)) {
     const rows = await database.unsafe(`select c.oid::text as oid,c.relkind,c.relispartition,c.relhasrules,c.relrowsecurity,
       exists(select 1 from pg_inherits where inhrelid=c.oid or inhparent=c.oid) as inherited,
@@ -63,43 +88,14 @@ export async function validateCatalog(database: Transaction, resources: Resource
     if(unsupported)throw new Error(`UNSUPPORTED_SELECTOR_COLLATION:${id}:${unsupported}`);
     if (!row.relrowsecurity && !row.relhasrules) equalityResources.add(id);
     if (row.relrowsecurity) {
-      const hidden=await database.unsafe(`select exists(
-        select 1 from pg_policy policy
-        join pg_depend dependency on dependency.classid='pg_policy'::regclass and dependency.objid=policy.oid
-        left join pg_proc function on dependency.refclassid='pg_proc'::regclass and function.oid=dependency.refobjid
-        left join pg_namespace function_schema on function_schema.oid=function.pronamespace
-        where policy.polrelid=$1::oid and (
-          policy.polqual::text like '%{SUBLINK%'
-          or (dependency.refclassid='pg_class'::regclass and dependency.refobjid<>$1::oid)
-          or (dependency.refclassid='pg_proc'::regclass and function_schema.nspname<>'pg_catalog')
-        )) as hidden`,[row.oid]);
-      const policyColumns = await database.unsafe(`select distinct attribute.attname as column
-        from pg_policy policy join pg_depend dependency on dependency.classid='pg_policy'::regclass and dependency.objid=policy.oid
-        join pg_attribute attribute on dependency.refclassid='pg_class'::regclass and attribute.attrelid=dependency.refobjid and attribute.attnum=dependency.refobjsubid
-        where policy.polrelid=$1::oid and dependency.refobjid=policy.polrelid and attribute.attnum>0
-        union
-        select attribute.attname as column from pg_policy policy join pg_attribute attribute on attribute.attrelid=policy.polrelid
-        where policy.polrelid=$1::oid and policy.polqual::text ~ ':varattno 0([^0-9]|$)' and attribute.attnum>0 and not attribute.attisdropped`,[row.oid]);
-      if (hidden[0]?.hidden) {
-        if (!manifest || !resolver) throw new Error(`UNRESOLVED_RLS_DEPENDENCY:${id}`);
-        const required=await resolver.resolveRelation({schema:r.schema ?? 'public',name:r.table});
-        // A policy may inspect other rows of any dependency, including its own
-        // table. Root input/column/literal constraints do not describe those rows.
-        // Record this independently of resource iteration order: a helper's
-        // ordinary table may have already been provisionally certified above.
-        for (const resource of required) unsafeEqualityResources.add(resource);
-        for (const reads of Object.values(manifest.reads)) {
-          if (!reads.some(read=>read.resource===id)) continue;
-          if (required.some(resource=>!reads.some(read=>read.resource===resource))) throw new Error(`UNRESOLVED_RLS_DEPENDENCY:${id}`);
-          if (required.some(resource=>resources[resource].scopeColumn !== null)) throw new Error(`UNRESOLVED_RLS_SCOPE_DEPENDENCY:${id}`);
-          if (required.some(resource=>!reads.some(read=>read.resource===resource && read.columns==='*' && read.bindings.length===0))) throw new Error(`UNRESOLVED_RLS_COLUMN_DEPENDENCY:${id}`);
-        }
-      } else {
-        for (const reads of Object.values(manifest?.reads ?? {})) for (const read of reads.filter(read=>read.resource===id)) {
-          if (read.columns !== '*' && policyColumns.some(column=>column.column!==r.scopeColumn && !read.columns.includes(String(column.column)))) {
-            throw new Error(`UNRESOLVED_RLS_COLUMN_DEPENDENCY:${id}`);
-          }
-        }
+      const pending=Object.entries(manifest?.reads ?? {}).filter(([endpoint,reads])=>reads.some(read=>read.resource===id) &&
+        !(stamp && manifest?.postgres?.policyProofs?.[endpoint]?.some(proof=>proof.resources.includes(id))));
+      if(pending.length || !manifest){
+        let dependencies:readonly CatalogPolicyDependency[];
+        try{dependencies=await resolver.policyDependencies!({schema:r.schema ?? 'public',name:r.table});}
+        catch(error){if(error instanceof Error && error.message.startsWith('UNTRACKED_QUERY_RELATION'))throw new Error(`UNRESOLVED_RLS_DEPENDENCY:${id}`,{cause:error});throw error;}
+        if(!manifest && dependencies.some(read=>read.rowConstraint==='all'))throw new Error(`UNRESOLVED_RLS_DEPENDENCY:${id}`);
+        for(const [,reads] of pending)verify(id,reads,dependencies);
       }
     }
   }

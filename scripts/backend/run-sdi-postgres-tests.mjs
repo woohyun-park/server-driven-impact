@@ -29,6 +29,9 @@ const child = spawn(
     'node_modules/vitest/vitest.mjs',
     'run',
     '--config', 'sdi.vitest.config.ts',
+    // Role/membership fixtures mutate cluster-wide catalogs included in artifact
+    // fingerprints; do not overlap them with another file's compile/validate.
+    '--no-file-parallelism',
     'tests/server-driven-impact/adapters.integration.test.ts',
     'tests/server-driven-impact/postgres.integration.test.ts',
     'tests/server-driven-impact/postgres-release.integration.test.ts',

@@ -13,16 +13,16 @@
 | `q.call` / `q.map` / combine / when / choose | 호출 또는 분기의 모든 resource·컬럼 | 입력 mapping이 없는 call과 map은 binding 유지. 모든 분기의 의존성은 포함 |
 | `q.bind` / 임의 call 입력 함수 | parent와 child 또는 호출 대상의 모든 resource·컬럼 | parent 입력 binding 유지. 임의 함수로 변환되는 child/callee 입력은 역변환할 수 없으므로 전체 입력으로 확장 |
 | PostgreSQL SQL parser | SELECT와 CTE·중첩 SELECT에 나타나는 직접 relation, 직접 동등 입력 조건 | 저수준 compiler는 증명한 WHERE equality만 보존. self-join은 독립적인 읽기 경로를 합집합으로 유지 |
-| PostgreSQL catalog artifacts의 일반 테이블 | catalog가 rules·policy 없는 일반/partitioned 테이블임을 확인하고, SQL의 projection·WHERE·JOIN ON·GROUP·HAVING·ORDER 표현식에서 컬럼 도출 | 사용하지 않는 컬럼 UPDATE를 제외. `count(*)`는 행 소속에 필요한 조건 컬럼만 관찰. LIMIT/OFFSET 쿼리도 정렬·조건 컬럼은 유지 |
-| PostgreSQL view / SQL 함수 / RLS | catalog와 지원 함수 본문의 relation 의존성 전개, 활성화된 미등록 일반 테이블 발견 | 발견한 resource 전체를 관찰. 숨은 읽기 컬럼과 입력은 보수적으로 확장 |
+| PostgreSQL catalog artifacts의 일반 테이블 | rules 없는 일반/partitioned 테이블의 SQL projection·WHERE·JOIN ON·GROUP·HAVING·ORDER 컬럼에 적용 RLS 컬럼을 합침 | 사용하지 않는 컬럼 UPDATE를 제외. `count(*)`는 행 소속에 필요한 조건 컬럼만 관찰. LIMIT/OFFSET 쿼리도 정렬·조건 컬럼은 유지 |
+| PostgreSQL view / SQL 함수 / RLS | catalog와 지원 함수 본문의 relation 의존성 전개, 활성화된 미등록 일반 테이블 발견 | RLS와 지원 SQL helper는 증명한 컬럼을 추적. view·복잡한 SELECT는 알려진 resource의 컬럼을 넓힘. 외부 행의 입력 범위는 넓게 유지 |
 
 WriteSet의 OLD/NEW 상태 각각에 equality binding을 적용하므로 고객 A → B 이동은 A와 B 조회를 모두 포함한다. 이전 결과가 비어 있던 입력도 첫 INSERT의 새 상태로 선택된다. 이는 실행된 캐시 목록을 재사용하거나 mutation마다 수동 invalidation 목록을 적는 방식이 아니다.
 
 ### 새로 보장하는 컬럼 정밀도
 
-PostgreSQL의 column pruning은 `PostgresCatalogResolver.canPruneColumns`가 명시적으로 증명한 직접 relation에만 적용한다. 기본 catalog resolver는 relation을 성공적으로 해석한 뒤 일반/partitioned 테이블이며 rules와 policy가 없을 때만 이를 허용한다. 사용자 resolver가 이 메서드를 제공하지 않거나 저수준 compiler를 catalog 없이 호출하면 기존 `columns: '*'`를 유지한다.
+PostgreSQL의 column pruning은 `PostgresCatalogResolver.canPruneColumns`가 명시적으로 증명한 직접 relation에만 적용한다. 기본 catalog resolver는 rules가 없는 일반/partitioned 테이블의 직접 SQL 컬럼에 `policyDependencies`가 분석한 RLS 컬럼을 합친다. 사용자 resolver가 컬럼 증명을 제공하지 않거나 저수준 compiler를 catalog 없이 호출하면 기존 `columns: '*'`를 유지한다.
 
-RLS가 결과에 필요한 같은 테이블의 숨은 컬럼을 읽을 수 있으므로, policy가 하나라도 있으면 해당 테이블의 컬럼은 넓게 유지한다. SELECT `id`에 드러나지 않는 `visible` 컬럼을 RLS가 검사하는 경우도 변경 영향에서 빠지지 않는다. 함수에서 같은 테이블을 추가로 읽는 경우의 broad dependency도 직접 SELECT의 좁은 컬럼 목록으로 덮어쓰지 않는다.
+일반 SELECT는 SELECT/ALL 정책의 USING만 분석하고 잠금 SELECT는 UPDATE USING도 포함한다. WITH CHECK 전용 참조는 제외한다. `effectiveRole`을 명시하면 실제 역할·상속·owner/BYPASSRLS/FORCE RLS도 반영한다. SELECT `id`에 드러나지 않는 `visible` 컬럼을 RLS가 검사하면 두 컬럼을 포함한다. 함수에서 같은 테이블의 다른 행을 읽는 경로는 직접 SELECT의 좁은 binding으로 덮어쓰지 않는다.
 
 중첩/상관 SELECT, whole-row expression, `*`, NATURAL/USING JOIN, 해석이 모호한 컬럼·alias는 컬럼 분석을 넓힌다. 3-part 컬럼 이름처럼 현재 컬럼 분석이 지원하지 않는 구문도 resource 의존성을 유지하고 전체 컬럼으로 처리한다. 이 경우를 좁힌 것으로 보고하지 않는다.
 
@@ -73,6 +73,6 @@ WriteSet 요약은 모든 포함 행에 공통인 인증 값만 유지한다. �
 
 고정 조건 인증은 `engine.validate()` 또는 bound adapter의 `validate()`가 성공한 뒤에만 활성화된다. 검증되지 않은 resource의 `equalityFields`는 계산 전에 제거되어 넓은 결과를 유지한다.
 
-RLS가 같은 행의 숨은 컬럼을 읽으면 좁은 manifest도 그 컬럼을 읽기 의존성에 포함해야 한다. `scopeColumn`으로 이미 처리되는 단순 tenant 조건은 유지한다. Whole-row policy 표현식은 해당 resource의 전체 컬럼 의존성으로 취급한다. SQL helper, 별도 relation 또는 subquery가 다른 행을 읽는 경우에는 endpoint마다 모든 숨은 dependency resource에 `columns: '*'`와 빈 `bindings`를 가진 읽기 경로가 필요하다. 이때 어떤 resource가 먼저 검사되었는지와 무관하게 고정 literal 인증도 끈다. 필요한 resource는 global scope로 등록해야 하며, tenant를 넘는 읽기가 없다는 근거 없이 scoped resource로 좁히면 거절한다.
+RLS가 같은 행의 숨은 컬럼을 읽으면 좁은 manifest도 그 컬럼을 읽기 의존성에 포함해야 한다. `scopeColumn`으로 이미 처리되는 단순 tenant 조건은 유지한다. Whole-row policy 표현식은 해당 resource의 전체 컬럼 의존성으로 취급한다. SQL helper, 별도 relation 또는 subquery가 다른 행을 읽으면 빈 `bindings`와 분석된 필수 컬럼(해석이 불완전하면 `'*'`)을 포함하는 경로가 필요하다. 검사 순서와 무관하게 해당 resource의 고정 literal 인증도 끈다. 필요한 resource는 global scope로 등록해야 하며, tenant를 넘는 읽기가 없다는 근거 없이 scoped resource로 좁히면 거절한다. INSERT/DELETE는 컬럼 축소와 무관하게 계속 관찰한다. 정책 분석 근거는 catalog artifact를 통해 compiler와 validator가 공유한다.
 
 이 조건을 충족하지 못하면 `UNRESOLVED_RLS_DEPENDENCY`, `UNRESOLVED_RLS_COLUMN_DEPENDENCY` 또는 `UNRESOLVED_RLS_SCOPE_DEPENDENCY`로 활성화를 거절한다. 배포 시 명시적인 broad dependency를 등록하거나 no-store로 실행해야 한다. `postgres-rls-dependency.integration.test.ts`가 같은 행의 숨은 컬럼·whole-row 표현식, 같은 테이블 helper/subquery, 숨은 resource의 input/scope 제약, 검사 순서와 실제 visibility 변경을 검증한다.

@@ -4,6 +4,8 @@ import { validateResources, type Resources } from '@server-driven-impact/runtime
 import type { PostgresQueryPlan } from '@server-driven-impact/runtime';
 import type { PostgresCatalogResolver } from './catalog-resolver.js';
 import { sqlReferences } from './sql-references.js';
+import type { PolicyCommand } from './policy-analysis.js';
+import type { CatalogPolicyDependency } from './catalog-resolver.js';
 
 const require=createRequire(import.meta.url);
 export type PostgresMajor = 14 | 15 | 16 | 17 | 18;
@@ -16,7 +18,7 @@ export interface PostgresQuerySource {
 }
 
 type Json=Record<string,any>;
-type DirectRelation={resource:string;alias:string;pruneColumns:boolean};
+type DirectRelation={resource:string;alias:string;pruneColumns:boolean;policyColumns?:'*'|readonly string[]};
 type Binding={alias?:string;column:string;parameter:number};
 
 function node(value: unknown,kind:string): Json|undefined {
@@ -102,7 +104,11 @@ export async function compilePostgresQuery(source: PostgresQuerySource, resource
     for(const [key,child] of Object.entries(select))if(key!=='withClause')collectReferences(child,visible);
   }
   collectSelectReferences(root,new Set());
-  const catalogRelations=new Map<string,{resources:readonly string[];direct?:string}>();
+  // Union locking requirements across occurrences of the same relation. This is
+  // conservative for mixed ordinary/locking self-joins and nested SELECTs.
+  const command:PolicyCommand=JSON.stringify(root).includes('"lockingClause"')?'select-for-update':'select';
+  const catalogRelations=new Map<string,{resources:readonly string[];direct?:string;policies?:readonly CatalogPolicyDependency[]}>();
+  const unprovenPolicyResources=new Set<string>();
   for(const reference of relationReferences.values()) {
     const direct=reference.schema
       ? Object.entries(resources).filter(([,resource])=>(resource.schema??'public')===reference.schema && resource.table===reference.name).map(([id])=>id)
@@ -112,13 +118,18 @@ export async function compilePostgresQuery(source: PostgresQuerySource, resource
       if(direct.length===1)continue;
       throw new Error(`UNRESOLVED_QUERY_RELATION:${reference.schema ? `${reference.schema}.` : ''}${reference.name}`);
     }
-    const resolved=[...await options.catalog.resolveRelation(reference)];
+    const resolved=[...await options.catalog.resolveRelation(reference,command)];
     if(!resolved.length)throw new Error(`POSTGRES_QUERY_HAS_NO_TRACKED_RELATION:${reference.name}`);
-    catalogRelations.set(canonical(reference),{resources:resolved,...(direct.length===1?{direct:direct[0]}:{})});
+    const policies=await options.catalog.policyDependencies?.(reference,command);
+    for(const resource of resolved)if(direct.length!==1 || resource!==direct[0] && !policies?.some(read=>read.resource===resource))unprovenPolicyResources.add(resource);
+    catalogRelations.set(canonical(reference),{resources:resolved,policies,...(direct.length===1?{direct:direct[0]}:{})});
   }
   for(const reference of functionReferences.values()) {
     if(!options.catalog){unresolvedFunction=true;continue;}
-    for(const resource of await options.catalog.resolveFunction(reference)) reads.push({resource,columns:'*',bindings:[]});
+    for(const resource of await options.catalog.resolveFunction(reference)){
+      reads.push({resource,columns:'*',bindings:[]});
+      unprovenPolicyResources.add(resource);
+    }
   }
 
   function resourceFor(range:Json):string {
@@ -137,10 +148,13 @@ export async function compilePostgresQuery(source: PostgresQuerySource, resource
       if (!range.schemaname && ctes.has(range.relname)) return;
       const resolved=catalogRelations.get(canonical(relationReference(range)));
       if(resolved){
-        for(const resource of resolved.resources)if(resource!==resolved.direct)reads.push({resource,columns:'*',bindings:[]});
+        for(const resource of resolved.resources)if(resource!==resolved.direct && !resolved.policies?.some(read=>read.resource===resource))reads.push({resource,columns:'*',bindings:[]});
+        for(const read of resolved.policies ?? [])if(read.rowConstraint==='all')reads.push({resource:read.resource,columns:read.columns==='*'?'*':[...read.columns],bindings:[]});
         if(!resolved.direct)return;
       }
-      relations.push({resource:resourceFor(range),alias:aliasOf(range),pruneColumns:options.catalog?.canPruneColumns?.(relationReference(range)) === true}); return;
+      const sameRow=resolved?.policies?.filter(read=>read.rowConstraint==='same-row');
+      const policyColumns=sameRow?.some(read=>read.columns==='*')?'*':sameRow?.flatMap(read=>[...read.columns]);
+      relations.push({resource:resourceFor(range),alias:aliasOf(range),pruneColumns:options.catalog?.canPruneColumns?.(relationReference(range)) === true,policyColumns}); return;
     }
     const join=node(value,'JoinExpr');
     if (join) { direct(join.larg,ctes,relations);direct(join.rarg,ctes,relations); }
@@ -244,7 +258,7 @@ export async function compilePostgresQuery(source: PostgresQuerySource, resource
         }
         return [{column:binding.column,input:parameters[binding.parameter-1]}];
       });
-      reads.push({resource:relation.resource,columns:relation.pruneColumns && observed ? [...observed.get(relation)!].sort() : '*',bindings:[...new Map(resolved.map(binding=>[canonical(binding),binding])).values()]});
+      reads.push({resource:relation.resource,columns:relation.pruneColumns && observed && relation.policyColumns!=='*' ? [...new Set([...observed.get(relation)!,...relation.policyColumns ?? []])].sort() : '*',bindings:[...new Map(resolved.map(binding=>[canonical(binding),binding])).values()]});
     }
     for (const [key,value] of Object.entries(select)) if (!['fromClause','whereClause','withClause'].includes(key)) nested(value,ctes);
     for (const entry of select.fromClause ?? []) nested(entry,ctes);
@@ -275,5 +289,9 @@ export async function compilePostgresQuery(source: PostgresQuerySource, resource
     if(!previous){merged.set(key,{...read,bindings});continue;}
     previous.columns=previous.columns==='*'||read.columns==='*'?'*':[...new Set([...previous.columns,...read.columns])].sort();
   }
-  return Object.freeze({kind:'postgres-query',text:source.text,parameters:Object.freeze(parameters),reads:Object.freeze([...merged.values()].map(read=>Object.freeze({...read,bindings:Object.freeze(read.bindings)})))}) as PostgresQueryPlan;
+  const policyProof=options.catalog?.policyDependencies?{
+    resources:[...new Set([...catalogRelations.values()].flatMap(relation=>[...(relation.direct?[relation.direct]:[]),...(relation.policies ?? []).map(read=>read.resource)]))].filter(resource=>!unprovenPolicyResources.has(resource)).sort(),
+    dependencies:[...catalogRelations.values()].flatMap(relation=>relation.policies ?? []),
+  }:undefined;
+  return Object.freeze({kind:'postgres-query',text:source.text,parameters:Object.freeze(parameters),reads:Object.freeze([...merged.values()].map(read=>Object.freeze({...read,bindings:Object.freeze(read.bindings)}))),...(policyProof?{policyProof}:{})}) as PostgresQueryPlan;
 }

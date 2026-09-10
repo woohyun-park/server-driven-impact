@@ -15,6 +15,8 @@ export interface PostgresArtifactOptions {
   version: PostgresMajor;
   searchPath?: readonly string[];
   discoverUnregisteredRelations?: boolean;
+  /** Role after transaction setup (e.g. SET LOCAL ROLE authenticated). Omit to union roles. */
+  effectiveRole?: string;
 }
 export interface PostgresArtifacts {
   resources: Resources;
@@ -28,9 +30,15 @@ export async function compilePostgresArtifacts(
   database: Transaction, resources: Resources,
   definitions: Record<string, PostgresSourceDefinition>, options: PostgresArtifactOptions,
 ): Promise<PostgresArtifacts> {
+  if(options.effectiveRole!==undefined){
+    if(!options.effectiveRole || options.effectiveRole.includes('\0'))throw new Error('UNRESOLVED_POLICY_ROLE');
+    const roles=await database.unsafe('select 1 from pg_roles where rolname=$1',[options.effectiveRole]);
+    if(!roles.length)throw new Error(`UNRESOLVED_POLICY_ROLE:${options.effectiveRole}`);
+  }
   const catalog = createPostgresCatalogResolver(database, resources, {
     parserVersion: options.version, searchPath: options.searchPath,
     discoverUnregisteredRelations: options.discoverUnregisteredRelations ?? true,
+    effectiveRole: options.effectiveRole,
   });
   const queries: Record<string, QueryDefinition> = Object.create(null);
   const diagnostics: Record<string, string> = Object.create(null);
@@ -66,7 +74,7 @@ export async function compilePostgresArtifacts(
     query.plan={...query.plan,cache:'no-store',reads:[]} as PostgresQueryPlan;
     diagnostics[endpoint]='UNRESOLVED_CUSTOM_TYPE_OR_OPERATOR';
   }
-  const stamp = {schemas, fingerprint: await catalogFingerprint(database, schemas)};
+  const stamp = {schemas, fingerprint: await catalogFingerprint(database, schemas),...(options.effectiveRole?{effectiveRole:options.effectiveRole}:{})};
   for (const query of Object.values(queries)) query.plan = {...query.plan, catalog:stamp} as PostgresQueryPlan;
   return {resources:resolved,queries,manifest:compileManifest(queries,resolved),diagnostics};
 }

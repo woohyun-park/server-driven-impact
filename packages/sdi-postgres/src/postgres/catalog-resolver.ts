@@ -3,19 +3,22 @@ import type { Transaction } from './tracked-db.js';
 import { createRequire } from 'node:module';
 import { createHash } from 'node:crypto';
 import { sqlReferences } from './sql-references.js';
+import { createPolicyAnalyzer, type PolicyCommand } from './policy-analysis.js';
 
 const require=createRequire(import.meta.url);
 
 export interface CatalogRelationReference { schema?: string; name: string }
 export interface CatalogFunctionReference { schema?: string; name: string; arguments: number }
+export interface CatalogPolicyDependency { resource: string; columns: '*'|readonly string[]; rowConstraint: 'same-row'|'all' }
 export interface PostgresCatalogResolver {
   /** Resource snapshot including any explicitly enabled catalog discoveries. */
   readonly resources: Resources;
   readonly schemas?: readonly string[];
-  resolveRelation(reference: CatalogRelationReference): Promise<readonly string[]>;
+  resolveRelation(reference: CatalogRelationReference, command?: PolicyCommand): Promise<readonly string[]>;
   resolveFunction(reference: CatalogFunctionReference): Promise<readonly string[]>;
-  /** True only after resolution proves a direct table has no hidden column reads. */
+  /** Direct SQL columns can be pruned when combined with policyDependencies, if provided. */
   canPruneColumns?(reference: CatalogRelationReference): boolean;
+  policyDependencies?(reference: CatalogRelationReference, command?: PolicyCommand): Promise<readonly CatalogPolicyDependency[]>;
 }
 
 type ObjectReference = { kind: 'relation' | 'function'; oid: string };
@@ -36,6 +39,7 @@ export function createPostgresCatalogResolver(
     discoverUnregisteredRelations?: boolean;
     /** Dependency-only validation may ignore non-row values while cached Query compilation rejects them. */
     nonRowDependencies?: 'reject'|'ignore';
+    effectiveRole?: string;
   } = {},
 ): PostgresCatalogResolver {
   const searchPath = [...(options.searchPath ?? ['public'])];
@@ -48,6 +52,8 @@ export function createPostgresCatalogResolver(
   const columnPruning = new Map<string, boolean>();
   const resolvedResources:Resources={...resources};
   const schemas=new Set(searchPath);
+  const analyzer=createPolicyAnalyzer(database,options);
+  const policyCache=new Map<string,Promise<readonly CatalogPolicyDependency[]>>();
   let expansions=0;
   const resourceByName = new Map(Object.entries(resolvedResources).map(([id, resource]) => [`${resource.schema ?? 'public'}.${resource.table}`, id]));
 
@@ -70,6 +76,30 @@ export function createPostgresCatalogResolver(
     resolvedResources[id]={schema:current.schema_name,table:current.object_name,idColumn:pk.length===0?null:pk.length===1?pk[0]:pk,scopeColumn:null,columns:current.columns ?? []};
     resourceByName.set(name,id);
     return id;
+  }
+
+  async function policyDependencies(reference:CatalogRelationReference,command:PolicyCommand='select',effectiveRole:string|null=options.effectiveRole ?? null):Promise<readonly CatalogPolicyDependency[]> {
+    const cacheKey=JSON.stringify([reference,command,effectiveRole]);
+    if(!policyCache.has(cacheKey))policyCache.set(cacheKey,(async()=>{
+      const analysis=await analyzer.analyze(reference,{command,effectiveRole:effectiveRole ?? undefined});
+      for(const schema of analysis.schemas)schemas.add(schema);
+      const result:CatalogPolicyDependency[]=[];
+      for(const read of analysis.reads){
+        schemas.add(read.schema);
+        let resource=resourceByName.get(`${read.schema}.${read.name}`);
+        if(!resource){
+          const [row]=await database.unsafe(`select c.oid::text,n.nspname as schema_name,c.relname as object_name,c.relkind,c.relispartition,
+            array(select a.attname::text from pg_attribute a where a.attrelid=c.oid and a.attnum>0 and not a.attisdropped order by a.attnum) as columns,
+            array(select a.attname::text from pg_index i cross join lateral unnest(i.indkey) k join pg_attribute a on a.attrelid=c.oid and a.attnum=k where i.indrelid=c.oid and i.indisprimary) as pk
+            from pg_class c join pg_namespace n on n.oid=c.relnamespace where n.nspname=$1 and c.relname=$2`,[read.schema,read.name]);
+          if(row)resource=discoveredResource(row as unknown as RelationRow);
+        }
+        if(!resource)throw new Error(`UNTRACKED_QUERY_RELATION:${read.schema}.${read.name}`);
+        result.push({resource,columns:read.columns,rowConstraint:read.rowConstraint});
+      }
+      return result;
+    })());
+    return policyCache.get(cacheKey)!;
   }
 
   async function relation(reference: CatalogRelationReference, path: Set<string>): Promise<readonly string[]> {
@@ -133,20 +163,13 @@ export function createPostgresCatalogResolver(
       const current=rows[0];
       if (!current) throw new Error(`UNRESOLVED_CATALOG_OBJECT:relation:${object.oid}`);
       schemas.add(current.schema_name);
-      const policies=await database.unsafe('select pg_get_expr(polqual,polrelid) as expression from pg_policy where polrelid=$1::oid',[current.oid]);
-      // RLS may inspect unprojected columns of this very table. A list of
-      // resource IDs cannot express those hidden reads, so only proven plain
-      // tables permit the SQL compiler to prune observed columns.
-      if (['r','p'].includes(current.relkind) && current.relhasrules === false && policies.length === 0) {
+      // General view/function expansion has no column/role proof. Union roles
+      // there; direct policy analysis handles definer/invoker contexts precisely.
+      const policies=await policyDependencies({schema:current.schema_name,name:current.object_name},'select',path.size>1?null:options.effectiveRole ?? null);
+      if (['r','p'].includes(current.relkind) && current.relhasrules === false) {
         prunableRelations.add(`${current.schema_name}.${current.object_name}`);
       }
-      for(const policy of policies)if(policy.expression){
-        const parser=require(`@pgsql/parser/v${options.parserVersion ?? 18}`) as {parse(text:string):Promise<unknown>};
-        const references=sqlReferences(await parser.parse(`select 1 where (${policy.expression})`));
-        if(nonRowDependencies==='reject' && references.nonRow)throw new Error('POSTGRES_QUERY_REQUIRES_FRESHNESS_POLICY');
-        if(references.unresolvedExpression)throw new Error('UNRESOLVED_QUERY_EXPRESSION');
-        bodyReads.push(...(await Promise.all(references.functions.map(reference=>routine(reference,new Set(path))))).flat());
-      }
+      bodyReads.push(...policies.map(read=>read.resource));
       if(current.relkind==='v'){
         const [definition]=await database.unsafe('select pg_get_viewdef($1::oid,true) as body',[current.oid]);
         const parser=require(`@pgsql/parser/v${options.parserVersion ?? 18}`) as {parse(text:string):Promise<unknown>};
@@ -171,10 +194,6 @@ export function createPostgresCatalogResolver(
         select d.refclassid,d.refobjid
         from pg_rewrite rewrite join pg_depend d on d.classid='pg_rewrite'::regclass and d.objid=rewrite.oid
         where $1='relation' and rewrite.ev_class=$2::oid and d.refobjid<>rewrite.ev_class
-        union
-        select d.refclassid,d.refobjid
-        from pg_policy policy join pg_depend d on d.classid='pg_policy'::regclass and d.objid=policy.oid
-        where $1='relation' and policy.polrelid=$2::oid and not (d.refclassid='pg_class'::regclass and d.refobjid=policy.polrelid)
       )
       select case when refclassid='pg_class'::regclass then 'relation' when refclassid='pg_proc'::regclass then 'function' end as kind,
         refobjid::text as oid
@@ -226,8 +245,11 @@ export function createPostgresCatalogResolver(
   return Object.freeze({
     resources: resolvedResources,
     get schemas() { return [...schemas].sort(); },
-    resolveRelation: (reference: CatalogRelationReference) => relation(reference,new Set()),
+    resolveRelation: async (reference: CatalogRelationReference,command:PolicyCommand='select') => [...new Set([
+      ...await relation(reference,new Set()),...(await policyDependencies(reference,command)).map(read=>read.resource),
+    ])].sort(),
     resolveFunction: (reference: CatalogFunctionReference) => routine(reference,new Set()),
     canPruneColumns: (reference: CatalogRelationReference) => columnPruning.get(key(reference)) === true,
+    policyDependencies,
   });
 }

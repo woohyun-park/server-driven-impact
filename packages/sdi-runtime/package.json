@@ -1,6 +1,6 @@
 {
   "name": "@server-driven-impact/runtime",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Backend query and command runtime for server-driven impact.",
   "type": "module",
   "license": "MIT",
