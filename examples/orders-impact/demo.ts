@@ -9,8 +9,8 @@ database.exec(`pragma foreign_keys=on;create table orders(id text primary key,te
 try {
   const engine=createImpact({adapter:sqliteAdapter({database}),...ordersDomain('main')});
   const context={scope:'tenant-one'};
-  await engine.command(context,db=>db.execute('insert into orders(id,tenant_id,customer_id,status,priority,note) values(?1,?2,?3,?4,?5,?6)',['one','tenant-one','old','ready',1,null]));
-  const result=await engine.command(context,db=>db.execute('update orders set customer_id=?1 where id=?2',['new','one']));
+  await engine.command(context,db=>db.execute('insert into orders(id,tenant_id,customer_id,status,priority,note) values(?,?,?,?,?,?)',['one','tenant-one','old','ready',1,null]));
+  const result=await engine.command(context,db=>db.execute('update orders set customer_id=? where id=?',['new','one']));
   for(const customer of ['old','new'])if(!result.impact.targets.some(target=>target.endpoint==='orders.list'&&matchesInputSelector({customer},target.selector)))throw new Error('MISSING_CUSTOMER_IMPACT');
   console.log(JSON.stringify({data:await engine.query('orders.list',{customer:'new'},context),impact:result.impact},null,2));
 } finally { database.close(); }

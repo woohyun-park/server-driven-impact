@@ -38,7 +38,7 @@ const queries = defineQueries({
 const engine = createImpact({ resources, queries, adapter: sqliteAdapter({ database }) });
 await engine.validate();
 const { impact } = await engine.command({ scope: 'tenant-a' }, db => db.execute(
-  'insert into notes(id, tenant_id, category, body) values(?1, ?2, ?3, ?4)',
+  'insert into notes(id, tenant_id, category, body) values(?, ?, ?, ?)',
   ['one', 'tenant-a', 'work', 'Ship SDI'],
 ));
 console.log(impact);
