@@ -71,11 +71,10 @@ const engine = createImpact({
 await engine.validate();
 
 const context = { scope: 'account-a' };
-const result = await engine.command(context, db => db.insert('todos', [{
-  id: 'todo-1',
-  account_id: 'account-a',
-  status: 'open',
-}]));
+const result = await engine.command(context, db => db.execute(
+  'insert into todos(id, account_id, status) values(?1, ?2, ?3)',
+  ['todo-1', 'account-a', 'open'],
+));
 
 console.log(result.data);
 console.log(result.impact);

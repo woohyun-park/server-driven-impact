@@ -129,17 +129,13 @@ const engine = createImpact({
 await engine.validate();
 
 const context = { scope: 'account-a' };
-await engine.command(context, db => db.insert('todos', [{
-  id: 'todo-1',
-  account_id: 'account-a',
-  status: 'open',
-}]));
+await engine.command(context, db => db.execute(
+  'insert into todos(id, account_id, status) values(?1, ?2, ?3)',
+  ['todo-1', 'account-a', 'open'],
+));
 
 const { data, impact } = await engine.command(context, db =>
-  db.update('todos', {
-    where: { id: 'todo-1' },
-    set: { status: 'done' },
-  }),
+  db.execute('update todos set status=?1 where id=?2', ['done', 'todo-1']),
 );
 
 console.log(data);
@@ -155,7 +151,7 @@ database.close();
 
 ### Resources
 
-Resource는 애플리케이션의 이름을 DB relation에 연결합니다. `idColumn`은 행 식별자이고, `scopeColumn`은 호출자별 영향을 구분합니다. 전역 데이터에는 `null`을 사용합니다. `columns`는 Query plan과 쓰기를 검증할 때 사용하는 허용 목록입니다.
+Resource는 애플리케이션의 이름을 DB relation에 연결합니다. `idColumn`은 행 식별자이고, `scopeColumn`은 호출자별 영향을 구분합니다. 전역 데이터에는 `null`을 사용합니다. `columns`는 Query plan을 검증하고 변경 사실을 수집할 필드를 설명합니다.
 
 `scope`는 영향 범위를 구분하는 메타데이터이며 인증이나 인가 수단이 아닙니다. 애플리케이션이 사용자의 신원을 검증하고 RLS 같은 DB 규칙으로 접근을 통제해야 합니다.
 

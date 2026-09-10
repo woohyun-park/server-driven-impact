@@ -38,11 +38,12 @@ const queries = defineQueries({
 const engine = createImpact({ resources, queries, adapter: sqliteAdapter({ database }) });
 
 await engine.validate();
-await engine.command({ scope: 'account-a' }, db => db.insert('todos', [{
-  id: 'todo-1', account_id: 'account-a', status: 'open',
-}]));
+await engine.command({ scope: 'account-a' }, db => db.execute(
+  'insert into todos(id, account_id, status) values(?1, ?2, ?3)',
+  ['todo-1', 'account-a', 'open'],
+));
 const result = await engine.command({ scope: 'account-a' }, db =>
-  db.update('todos', { where: { id: 'todo-1' }, set: { status: 'done' } }),
+  db.execute('update todos set status=?1 where id=?2', ['done', 'todo-1']),
 );
 console.log(result.impact);
 console.log(await engine.query('todos.byStatus', { status: 'done' }, { scope: 'account-a' }));

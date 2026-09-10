@@ -24,7 +24,9 @@ import {
 } from '@server-driven-impact/runtime';
 import {
   generateObserverMigration,
+  identifier,
   postgresAdapter,
+  sql,
 } from '@server-driven-impact/postgres';
 
 const admin = postgres(process.env.DATABASE_ADMIN_URL!, { max: 1 });
@@ -85,11 +87,10 @@ await engine.validate();
 
 const result = await engine.command(
   { scope: 'account-a' },
-  db => db.insert('todos', [{
-    id: 'todo-1',
-    account_id: 'account-a',
-    status: 'open',
-  }]),
+  db => db.execute(sql`
+    insert into ${identifier('public')}.${identifier('todos')}(id, account_id, status)
+    values(${'todo-1'}, ${'account-a'}, ${'open'})
+  `),
 );
 
 console.log(result.impact);

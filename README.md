@@ -129,17 +129,13 @@ const engine = createImpact({
 await engine.validate();
 
 const context = { scope: 'account-a' };
-await engine.command(context, db => db.insert('todos', [{
-  id: 'todo-1',
-  account_id: 'account-a',
-  status: 'open',
-}]));
+await engine.command(context, db => db.execute(
+  'insert into todos(id, account_id, status) values(?1, ?2, ?3)',
+  ['todo-1', 'account-a', 'open'],
+));
 
 const { data, impact } = await engine.command(context, db =>
-  db.update('todos', {
-    where: { id: 'todo-1' },
-    set: { status: 'done' },
-  }),
+  db.execute('update todos set status=?1 where id=?2', ['done', 'todo-1']),
 );
 
 console.log(data);
@@ -155,7 +151,7 @@ The second Command impacts `todos.byStatus` for both `{ status: "open" }` and `{
 
 ### Resources
 
-A Resource maps an application name to a database relation. `idColumn` identifies rows. `scopeColumn` partitions caller-specific impact; use `null` for global data. `columns` is an allowlist used to validate Query plans and writes.
+A Resource maps an application name to a database relation. `idColumn` identifies rows. `scopeColumn` partitions caller-specific impact; use `null` for global data. `columns` describes the fields used to validate Query plans and collect write facts.
 
 `scope` is impact metadata, not authentication or authorization. The application must verify identity and enforce access through RLS or equivalent database rules.
 

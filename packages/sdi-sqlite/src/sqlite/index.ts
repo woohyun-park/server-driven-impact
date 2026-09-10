@@ -2,18 +2,16 @@ import type { DatabaseSync, SQLInputValue } from 'node:sqlite';
 import type { WriteSet } from '@server-driven-impact/core';
 import { LIMITS, canonical, isScalar, type Scalar, type WriteFact, type RowState } from '@server-driven-impact/core';
 import { bindAdapter, identityColumns, type ImpactAdapter, type QueryManifest, type Resources, type SelectExecutor } from '@server-driven-impact/runtime/adapter';
-import { predicates, validatePatch, type CommandDb, type DataRow, type Where, type WriteResult } from '@server-driven-impact/runtime/adapter';
 import { guardDatabase } from '@server-driven-impact/runtime/adapter';
-import { q, type Input } from '@server-driven-impact/runtime';
+import { type Input } from '@server-driven-impact/runtime';
 import { compileSelect } from './select.js';
 import { createHash } from 'node:crypto';
 import { ImpactUnavailableError } from '@server-driven-impact/runtime/adapter';
 
-export interface SqliteCommandDb extends CommandDb {
-  readonly sqlite: {
-    /** Execute one trusted native SQLite statement on the owned transaction. */
-    execute(text: string, values?: readonly SQLInputValue[]): Promise<DataRow[]>;
-  };
+export type DataRow = Record<string, unknown>;
+export interface SqliteCommandDb {
+  /** Execute one trusted native SQLite statement on the owned transaction. */
+  execute(text: string, values?: readonly SQLInputValue[]): Promise<DataRow[]>;
   savepoint<T>(work: (db: SqliteCommandDb) => Promise<T>): Promise<T>;
 }
 export interface SqliteOptions { database: DatabaseSync }
@@ -175,65 +173,12 @@ export function sqliteAdapter(options: SqliteOptions): ImpactAdapter<SqliteComma
         const statement = compileSelect(plan, input, resources);
         return database.prepare(statement.text).all(bindings(statement.values)).map(row => JSON.parse(String(row.value)) as DataRow);
       };
-      function table(resource: string): string {
-        if (!Object.hasOwn(resources, resource)) throw new Error('UNREGISTERED_RESOURCE');
-        return ident(resources[resource].table);
-      }
-      function condition(resource: string, where: Where) {
-        const statement = compileSelect(q.select(resource, { columns: [], where: predicates(where) }), {}, resources);
-        return { text: statement.text.split(' WHERE ')[1] ?? '1', values: statement.values };
-      }
       function dbFor(): SqliteCommandDb {
         let savepointId = 0;
-        function beforeRows(resource: string, where: Where) {
-          const predicate = condition(resource, where);
-          return database.prepare(`select t0.* from ${table(resource)} as t0 where ${predicate.text} limit ${LIMITS.facts + 1}`).all(bindings(predicate.values));
-        }
         const db: SqliteCommandDb = {
-          sqlite:{
-            async execute(text,values=[]) {
-              assertNativeStatement(text);
-              return database.prepare(text).all(...values) as DataRow[];
-            },
-          },
-          select: async (resource, opts = {}) => select(q.select(resource, opts), {}) as Promise<DataRow[]>,
-          async insert(resource, rows, options = {}) {
-            table(resource);
-            if (options.returnRows && rows.length > LIMITS.facts) throw new Error('USE_BATCH_WRITE_WITHOUT_ROWS');
-            const returned: DataRow[] = [];
-            let statement: ReturnType<DatabaseSync['prepare']> | undefined;
-            let expectedNames: string[] | undefined;
-            for (const row of rows) {
-              const names = Object.keys(row);
-              if (!names.length || names.some(c => !resources[resource].columns.includes(c))) throw new Error('UNREGISTERED_COLUMN');
-              if (expectedNames && canonical(names) !== canonical(expectedNames)) throw new Error('BATCH_COLUMNS_MUST_MATCH');
-              expectedNames ??= names;
-              statement ??= database.prepare(`insert into ${table(resource)} (${names.map(ident).join(',')}) values (${names.map(() => '?').join(',')})${options.returnRows ? ' returning *' : ''}`);
-              const values=names.map(c => value(row[c]));
-              if (options.returnRows) returned.push({ ...statement.get(...values)! });
-              else statement.run(...values);
-            }
-            return { count: rows.length, rows: returned };
-          },
-          async update(resource, options) {
-            validatePatch(resource, options.set, resources);
-            if (options.returnRows && beforeRows(resource, options.where).length > LIMITS.facts) throw new Error('USE_BATCH_WRITE_WITHOUT_ROWS');
-            const predicate = condition(resource, options.where);
-            const names = Object.keys(options.set);
-            const assignments = names.map((name, i) => `${ident(name)}=$${predicate.values.length + i + 1}`).join(',');
-            const values=bindings([...predicate.values, ...names.map(c => options.set[c])]);
-            if(options.returnRows) {
-              const rows=database.prepare(`update ${table(resource)} as t0 set ${assignments} where ${predicate.text} returning *`).all(values) as DataRow[];
-              return {count:rows.length,rows:rows.map(row=>({...row}))};
-            }
-            const result = database.prepare(`update ${table(resource)} as t0 set ${assignments} where ${predicate.text}`).run(values);
-            return { count:Number(result.changes), rows:[] };
-          },
-          async delete(resource, options): Promise<WriteResult> {
-            const predicate = condition(resource, options.where);
-            const result = database.prepare(`delete from ${table(resource)} as t0 where ${predicate.text}`).run(bindings(predicate.values));
-            const count = Number(result.changes);
-            return { count, rows: [] };
+          async execute(text,values=[]) {
+            assertNativeStatement(text);
+            return database.prepare(text).all(...values) as DataRow[];
           },
           async savepoint<T>(work: (child: SqliteCommandDb) => Promise<T>): Promise<T> {
             const name = ident('sdi_' + (++savepointId));

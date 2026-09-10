@@ -30,7 +30,7 @@ try {
     const durations=[];let bytes=0;
     for(let sample=-2;sample<samples;sample++){
       const start=performance.now();const statement=`update "${schema}".${mode} set value=value+1`;
-      const response=mode==='native'?await database.begin('isolation level repeatable read',tx=>tx.unsafe(statement)):await engines[mode].command({scope:'bench'},db=>db.postgres.execute(new Sql(statement)));
+      const response=mode==='native'?await database.begin('isolation level repeatable read',tx=>tx.unsafe(statement)):await engines[mode].command({scope:'bench'},db=>db.execute(new Sql(statement)));
       if(sample>=0){durations.push(performance.now()-start);bytes=Math.max(bytes,Buffer.byteLength(JSON.stringify(response)));}
     }
     durations.sort((a,b)=>a-b);const percentile=p=>Number(durations[Math.ceil(p*durations.length)-1].toFixed(3));

@@ -70,19 +70,17 @@ await engine.validate();
 
 const { impact } = await engine.command(
   { scope: 'tenant-a' },
-  db => db.insert('notes', [{
-    id: 'one',
-    tenant_id: 'tenant-a',
-    category: 'work',
-    body: 'Ship SDI',
-  }]),
+  db => db.execute(
+    'insert into notes(id, tenant_id, category, body) values(?1, ?2, ?3, ?4)',
+    ['one', 'tenant-a', 'work', 'Ship SDI'],
+  ),
 );
 
 console.log(impact);
 database.close();
 ```
 
-adapter는 Command transaction 안에서 구조화된 쓰기, 신뢰된 native DML, trigger, foreign-key cascade, rollback, savepoint를 관찰합니다. connection-local TEMP observer를 사용하므로 `DatabaseSync` 연결 하나마다 adapter 하나를 공유하세요.
+adapter는 Command transaction 안에서 native DML, trigger, foreign-key cascade, rollback, savepoint를 관찰합니다. connection-local TEMP observer를 사용하므로 `DatabaseSync` 연결 하나마다 adapter 하나를 공유하세요.
 
 0.1 버전은 Node 동기 SQLite 드라이버, `main` 데이터베이스, 단일 primary key를 가진 일반 테이블, 등록된 `TEXT`, `INTEGER`, `REAL` 컬럼과 SQLite 기본 `BINARY`·`NOCASE`·`RTRIM` collation을 지원합니다. `ATTACH`, virtual table, generated/hidden column, 사용자 정의 collation, 스키마 충돌 정책을 포함한 `REPLACE`, Command 안의 transaction 제어와 DDL은 거부합니다.
 

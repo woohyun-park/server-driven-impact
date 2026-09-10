@@ -13,7 +13,7 @@ Use `postgresAdapter({ database })` with postgres.js. For node-postgres, install
 ```ts
 import postgres from 'postgres';
 import { createImpact, compileManifest, defineQueries, q, type Input, type Resources } from '@server-driven-impact/runtime';
-import { generateObserverMigration, postgresAdapter } from '@server-driven-impact/postgres';
+import { generateObserverMigration, identifier, postgresAdapter, sql } from '@server-driven-impact/postgres';
 
 const admin = postgres(process.env.DATABASE_ADMIN_URL!, { max: 1 });
 const database = postgres(process.env.DATABASE_URL!, { max: 4 });
@@ -48,9 +48,10 @@ const adapter = postgresAdapter({
 });
 const engine = createImpact({ resources, queries, adapter });
 await engine.validate();
-const result = await engine.command({ scope: 'account-a' }, db => db.insert('todos', [{
-  id: 'todo-1', account_id: 'account-a', status: 'open',
-}]));
+const result = await engine.command({ scope: 'account-a' }, db => db.execute(sql`
+  insert into ${identifier('public')}.${identifier('todos')}(id, account_id, status)
+  values(${'todo-1'}, ${'account-a'}, ${'open'})
+`));
 console.log(result.impact);
 await database.end();
 ```

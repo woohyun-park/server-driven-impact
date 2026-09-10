@@ -37,13 +37,14 @@ const queries = defineQueries({
 });
 const engine = createImpact({ resources, queries, adapter: sqliteAdapter({ database }) });
 await engine.validate();
-const { impact } = await engine.command({ scope: 'tenant-a' }, db => db.insert('notes', [{
-  id: 'one', tenant_id: 'tenant-a', category: 'work', body: 'Ship SDI',
-}]));
+const { impact } = await engine.command({ scope: 'tenant-a' }, db => db.execute(
+  'insert into notes(id, tenant_id, category, body) values(?1, ?2, ?3, ?4)',
+  ['one', 'tenant-a', 'work', 'Ship SDI'],
+));
 console.log(impact);
 database.close();
 ```
 
-The adapter observes structured writes, trusted native DML, triggers, foreign-key cascades, rollback, and savepoints inside the Command transaction. It uses connection-local TEMP observers, so share one adapter for each `DatabaseSync` connection.
+The adapter observes native DML, triggers, foreign-key cascades, rollback, and savepoints inside the Command transaction. It uses connection-local TEMP observers, so share one adapter for each `DatabaseSync` connection.
 
 Version 0.1 supports Node's synchronous SQLite driver, the `main` database, ordinary tables with one primary-key column, registered `TEXT`, `INTEGER`, or `REAL` columns, and SQLite's built-in `BINARY`, `NOCASE`, and `RTRIM` collations. `ATTACH`, virtual tables, generated or hidden columns, custom collations, `REPLACE` (including schema-level conflict policies), transaction control, and DDL inside a Command are rejected. Node.js 22.18 or newer is required.
