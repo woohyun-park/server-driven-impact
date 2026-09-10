@@ -1,5 +1,7 @@
 # @server-driven-impact/runtime
 
+[English](./README.md) | [한국어](./README.ko.md)
+
 The Query/Command execution boundary for Server-Driven Impact.
 
 ```bash
@@ -21,7 +23,12 @@ const resources: Resources = {
     columns: ['id', 'account_id', 'status'],
   },
 };
-const input = { parse(value: unknown): Input { return value as Input; } };
+const input = { parse(value: unknown): Input {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('INVALID_INPUT');
+  const status = (value as Record<string, unknown>).status;
+  if (typeof status !== 'string') throw new Error('INVALID_STATUS');
+  return { status };
+} };
 const queries = defineQueries({
   'todos.byStatus': {
     input,

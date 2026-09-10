@@ -1,5 +1,7 @@
 # @server-driven-impact/postgres
 
+[English](./README.md) | [한국어](./README.ko.md)
+
 PostgreSQL execution, write observation, catalog validation, and migration support for Server-Driven Impact.
 
 ```bash
@@ -21,7 +23,12 @@ const resources: Resources = {
     columns: ['id', 'account_id', 'status'],
   },
 };
-const input = { parse(value: unknown): Input { return value as Input; } };
+const input = { parse(value: unknown): Input {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('INVALID_INPUT');
+  const status = (value as Record<string, unknown>).status;
+  if (typeof status !== 'string') throw new Error('INVALID_STATUS');
+  return { status };
+} };
 const queries = defineQueries({
   'todos.byStatus': {
     input,

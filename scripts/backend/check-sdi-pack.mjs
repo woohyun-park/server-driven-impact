@@ -33,8 +33,10 @@ for (const directory of packageDirectories) {
   } else {
     const packed = JSON.parse(run('pnpm', ['pack', '--json', '--pack-destination', destination], resolve(root, 'packages', directory), { ...process.env, NPM_CONFIG_IGNORE_SCRIPTS: 'true' }));
     const result = Array.isArray(packed) ? packed[0] : packed;
+    const paths = new Set(result.files.map(file => file.path));
+    if (!paths.has('README.md') || !paths.has('README.ko.md')) throw new Error(`PACKAGE_READMES_REQUIRED:${directory}`);
     for (const file of result.files) {
-      if (!/^(package.json|README.md|CHANGELOG.md|LICENSE|dist\/.*\.(js|d.ts))$/.test(file.path)) {
+      if (!/^(package.json|README(?:\.ko)?\.md|CHANGELOG.md|LICENSE|dist\/.*\.(js|d.ts))$/.test(file.path)) {
         throw new Error(`UNEXPECTED_PACK_FILE:${directory}:${file.path}`);
       }
     }

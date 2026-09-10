@@ -1,5 +1,7 @@
 # @server-driven-impact/core
 
+[English](./README.md) | [한국어](./README.ko.md)
+
 Database-neutral contracts and the pure `ImpactSet` calculator for Server-Driven Impact.
 
 ```bash
@@ -33,5 +35,7 @@ console.log(calculateImpact(writes, { resources, manifest, scope: 'account-a' })
 ```
 
 `WriteFact` describes a committed database write. `ImpactSet` conservatively describes which registered query inputs may now be stale. This package performs no I/O and has no database driver or frontend dependency. Most backend applications use it through `@server-driven-impact/runtime` and an adapter.
+
+For diagnostics, `createImpact({ resources, manifest })` creates a reusable calculator whose `explain(writes, scope)` method returns the same `ImpactSet` together with the decisions made by the exact calculation path. This method belongs to the core calculator; the runtime engine does not expose `explain()`.
 
 Node.js 22.18 or newer is required.
