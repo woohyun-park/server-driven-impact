@@ -1,0 +1,74 @@
+# @server-driven-impact/core
+
+[English](./README.md) | [한국어](./README.ko.md)
+
+DB와 무관한 Server-Driven Impact 계약과 순수 `ImpactSet` 계산기입니다.
+
+```bash
+pnpm add @server-driven-impact/core
+```
+
+```ts
+import {
+  calculateImpact,
+  type ImpactManifest,
+  type ImpactResources,
+  type WriteFact,
+} from '@server-driven-impact/core';
+
+const resources: ImpactResources = {
+  todos: {
+    scopeColumn: 'account_id',
+    columns: ['id', 'account_id', 'status'],
+  },
+};
+
+const manifest: ImpactManifest = {
+  protocolVersion: 1,
+  reads: {
+    'todos.byStatus': [{
+      resource: 'todos',
+      columns: ['id', 'status'],
+      bindings: [{ column: 'status', input: 'status' }],
+    }],
+  },
+};
+
+const writes: WriteFact[] = [{
+  resource: 'todos',
+  operation: 'update',
+  before: {
+    kind: 'known',
+    scope: 'account-a',
+    fields: { status: 'open' },
+  },
+  after: {
+    kind: 'known',
+    scope: 'account-a',
+    fields: { status: 'done' },
+  },
+  changedColumns: ['status'],
+}];
+
+console.log(calculateImpact(writes, {
+  resources,
+  manifest,
+  scope: 'account-a',
+}));
+```
+
+결과에는 `todos.byStatus`의 `{ status: "open" }`과 `{ status: "done" }`이 모두 들어갑니다. OLD와 NEW를 함께 계산하므로 목록 사이를 이동한 행도 놓치지 않습니다.
+
+`WriteFact`는 커밋된 DB 쓰기를 나타냅니다. `ImpactSet`은 어떤 등록 Query 입력이 오래됐을 가능성이 있는지를 보수적으로 표현합니다. `unknown` 행이나 되돌릴 수 없는 입력 변환처럼 좁은 selector를 증명할 수 없는 경우에는 해당 endpoint의 모든 입력으로 넓힙니다.
+
+이 패키지는 I/O를 수행하지 않고 DB 드라이버나 프론트엔드에 의존하지 않습니다. adapter를 직접 작성하거나 계산기만 별도로 사용하지 않는 일반적인 백엔드 애플리케이션이라면 `@server-driven-impact/runtime`과 DB adapter를 함께 사용하세요.
+
+주요 공개 도구는 다음과 같습니다.
+
+- `calculateImpact()`: `WriteFact` 목록을 바로 `ImpactSet`으로 계산합니다.
+- `createImpact()`: 검증된 계산기를 만들며 `calculate()`와 같은 계산 경로를 사용하는 `explain()` 결정 기록도 제공합니다.
+- `WriteSet`: transaction 동안 fact를 모으고 snapshot을 만드는 제한된 버퍼입니다.
+- `matchesInputSelector()`: 애플리케이션 입력이 target selector와 일치하는지 판정합니다.
+- `canonical()`: 지원되는 JSON 값의 결정적 표현을 만듭니다.
+
+Node.js 22.18 이상이 필요합니다.

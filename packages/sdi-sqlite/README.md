@@ -1,5 +1,7 @@
 # @server-driven-impact/sqlite
 
+[English](./README.md) | [한국어](./README.ko.md)
+
 SQLite execution and transaction-local write observation for Server-Driven Impact.
 
 ```bash
@@ -21,7 +23,12 @@ const resources: Resources = {
     columns: ['id', 'tenant_id', 'category', 'body'],
   },
 };
-const input = { parse(value: unknown): Input { return value as Input; } };
+const input = { parse(value: unknown): Input {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('INVALID_INPUT');
+  const category = (value as Record<string, unknown>).category;
+  if (typeof category !== 'string') throw new Error('INVALID_CATEGORY');
+  return { category };
+} };
 const queries = defineQueries({
   'notes.byCategory': {
     input,

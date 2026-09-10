@@ -7,7 +7,7 @@
   "sideEffects": false,
   "types": "./dist/postgres/index.d.ts",
   "module": "./dist/postgres/index.js",
-  "files": ["dist", "README.md", "CHANGELOG.md", "LICENSE"],
+  "files": ["dist", "README.md", "README.ko.md", "CHANGELOG.md", "LICENSE"],
   "exports": {
     ".": { "types": "./dist/postgres/index.d.ts", "import": "./dist/postgres/index.js" },
     "./pg": { "types": "./dist/pg/index.d.ts", "import": "./dist/pg/index.js" }
