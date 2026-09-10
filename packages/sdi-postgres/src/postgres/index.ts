@@ -13,7 +13,6 @@ import { generateObserverMigration, observationRelations, observerFingerprint, o
 import { randomUUID } from 'node:crypto';
 import { CommitStateUnknownError, ImpactUnavailableError } from '@server-driven-impact/runtime/adapter';
 import { createPostgresCatalogResolver } from './catalog-resolver.js';
-import { catalogFingerprint } from './catalog-fingerprint.js';
 import { lockSession, releaseSession } from './session.js';
 import type { PostgresSetupTransaction } from './public-types.js';
 
@@ -22,6 +21,8 @@ export { generateObserverMigration, observerFingerprint } from './observer.js';
 export { compilePostgresQuery, type PostgresMajor, type PostgresQuerySource } from './query-compiler.js';
 export { createPostgresCatalogResolver };
 export type { PostgresCatalogResolver, CatalogRelationReference, CatalogFunctionReference } from './catalog-resolver.js';
+export type { CatalogPolicyDependency } from './catalog-resolver.js';
+export type { PolicyCommand, PolicyAnalysisContext } from './policy-analysis.js';
 export { resolvePostgresResources } from './catalog.js';
 export { migratePostgresArtifacts, migratePostgresQueries } from './migration.js';
 export { compilePostgresArtifacts, type PostgresArtifacts, type PostgresSourceDefinition, type PostgresArtifactOptions } from './artifact.js';
@@ -116,7 +117,6 @@ export function postgresAdapter<T extends Record<string, unknown>>(options: Post
       const fingerprint = observerFingerprint(resources,manifest);
       const layout = observerLayout(fingerprint);
       const performValidation = async (database: Transaction) => {
-        if(manifest.postgres?.catalog && await catalogFingerprint(database,manifest.postgres.catalog.schemas)!==manifest.postgres.catalog.fingerprint)throw new Error('POSTGRES_ARTIFACT_DRIFT');
         const validatedEqualityResources = await validateCatalog(database,resources,manifest);
         const rows = await database.unsafe(`select fingerprint,definition_hashes from ${layout.internalSchema}.${layout.metadataTable} where singleton=true`);
         if (rows[0]?.fingerprint !== fingerprint || !rows[0]?.definition_hashes || typeof rows[0].definition_hashes !== 'object') throw new Error('OBSERVER_MANIFEST_MISMATCH');
@@ -185,6 +185,10 @@ export function postgresAdapter<T extends Record<string, unknown>>(options: Post
         async query<V>(scope: Scalar, work: (select: (plan: ExecutableQueryPlan, input: Input) => Promise<unknown[]>) => Promise<V>): Promise<V> {
           const result = await readTransaction(async tx => {
             await options.setup?.(tx, scope);
+            if(manifest.postgres?.catalog?.effectiveRole){
+              const [role]=await tx.unsafe('select current_user as role');
+              if(role.role!==manifest.postgres.catalog.effectiveRole)throw new Error('POSTGRES_ARTIFACT_ROLE_MISMATCH');
+            }
             const data = await work(async (plan, input) => {
               if (plan.kind === 'postgres-query') {
                 if(plan.searchPath)await tx.unsafe("select set_config('search_path',$1,true)",[plan.searchPath.map(schema=>'"'+schema.replaceAll('"','""')+'"').join(',')]);

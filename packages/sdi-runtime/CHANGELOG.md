@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.1
+
+- Carry PostgreSQL policy proofs through composed Query manifests without suppressing validation of independent reads of the same resource.
+
 ## 0.4.0
 
 - Derive necessary literal equality filters from Query Plans and remove unused count projection/order/optional-join dependencies.

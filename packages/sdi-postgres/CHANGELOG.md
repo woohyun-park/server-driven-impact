@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.1
+
+- Select RLS dependencies by read command and optional effective runtime role; exclude write-only policies and WITH CHECK from SELECT analysis.
+- Track proven policy/helper columns separately from unconditional external-row dependencies. Share policy proofs between compilation and validation, preserve INSERT/DELETE coverage, and verify explicit roles after setup. Regenerate and install artifacts when upgrading.
+
 ## 0.4.0
 
 - Add native pg query configuration, scoped lazy postgres.js tagged execution, and optional Drizzle 0.45.2 / Prisma 7.10.0 adapters over the owned pg connection.

@@ -1,6 +1,6 @@
 {
   "name": "@server-driven-impact/core",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Database-neutral impact calculation from observed writes.",
   "type": "module",
   "license": "MIT",

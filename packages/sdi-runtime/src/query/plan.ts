@@ -2,10 +2,15 @@ import { LIMITS, byteLength, canonical, isScalar, validateImpactManifest, type I
 import { validateResources, type Resources } from '../resources.js';
 type ResourceId = string;
 export type { ReadDependency } from '@server-driven-impact/core';
+export interface PostgresPolicyProof {
+  resources: readonly string[];
+  dependencies: readonly {resource:string;columns:'*'|readonly string[];rowConstraint:'same-row'|'all'}[];
+}
+export interface PostgresCatalogStamp { schemas: readonly string[]; fingerprint: string; effectiveRole?: string }
 
 export interface QueryManifest extends ImpactManifest {
   /** Deployment definitions, independent of per-request data changes. */
-  postgres?: { signature: string; catalog?: { schemas: readonly string[]; fingerprint: string } };
+  postgres?: { signature: string; catalog?: PostgresCatalogStamp; policyProofs?: Record<string,readonly PostgresPolicyProof[]> };
 }
 
 export function validateManifest(manifest: QueryManifest, resources: Resources): void {
@@ -22,7 +27,7 @@ export type PageValue = number | Value;
 export type SelectOptions = { columns?: string[]; joins?: Join[]; where?: Predicate[]; order?: { field: string; ascending?: boolean; nullsFirst?: boolean }[]; limit?: PageValue; offset?: PageValue };
 export type SelectPlan = { kind: 'select'; resource: ResourceId; options: SelectOptions; result?: 'rows' | 'count' };
 /** PostgreSQL SQL compiled ahead of runtime with its read dependencies attached. */
-export type PostgresQueryPlan = { kind: 'postgres-query'; text: string; parameters: readonly string[]; reads: readonly ReadDependency[]; cache?: 'no-store'; searchPath?: readonly string[]; catalog?: { schemas: readonly string[]; fingerprint: string } };
+export type PostgresQueryPlan = { kind: 'postgres-query'; text: string; parameters: readonly string[]; reads: readonly ReadDependency[]; cache?: 'no-store'; searchPath?: readonly string[]; catalog?: PostgresCatalogStamp; policyProof?:PostgresPolicyProof };
 export type ExecutableQueryPlan = SelectPlan | PostgresQueryPlan;
 export type Plan =
   | SelectPlan
@@ -176,6 +181,31 @@ export function compileManifest(queries: Record<string, QueryDefinition>, resour
     const stamp = stamps[0];
     if (stamps.some(value => JSON.stringify(value) !== JSON.stringify(stamp))) throw new Error('MIXED_POSTGRES_ARTIFACTS');
     manifest.postgres = { signature: JSON.stringify(nativePlans.map(plan => [plan.text,plan.parameters,plan.cache ?? 'tracked',plan.searchPath ?? null])), ...(stamp ? {catalog:stamp} : {}) };
+    function proofs(plan:Plan,unproven:Set<string>):PostgresPolicyProof[] {
+      switch(plan.kind){
+        case 'postgres-query':{
+          const proof=plan.cache!=='no-store' && plan.catalog?plan.policyProof:undefined;
+          for(const read of plan.reads)if(!proof?.resources.includes(read.resource))unproven.add(read.resource);
+          return proof?[proof]:[];
+        }
+        case 'select':for(const read of readsFor(plan))unproven.add(read.resource);return [];
+        case 'call':return proofs(queries[plan.endpoint].plan,unproven);
+        case 'map':return proofs(plan.source,unproven);
+        case 'bind':return [...proofs(plan.parent,unproven),...proofs(plan.child,unproven)];
+        case 'combine':return Object.values(plan.children).flatMap(child=>proofs(child,unproven));
+        case 'when':return [...proofs(plan.yes,unproven),...proofs(plan.no,unproven)];
+        case 'choose':return Object.values(plan.choices).flatMap(child=>proofs(child,unproven));
+        default:return [];
+      }
+    }
+    const policyProofs=Object.fromEntries(Object.entries(queries).flatMap(([id,query])=>{
+      const unproven=new Set<string>();
+      const found=proofs(query.plan,unproven);
+      // A definer helper's proof must not suppress validation of a separate
+      // structured/direct read of that same table in a composed endpoint.
+      return found.length?[[id,found.map(proof=>({...proof,resources:proof.resources.filter(resource=>!unproven.has(resource))}))]]:[];
+    }));
+    if(Object.keys(policyProofs).length)manifest.postgres.policyProofs=policyProofs;
   }
   validateManifest(manifest,resources);
   return manifest;

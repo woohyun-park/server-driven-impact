@@ -53,7 +53,7 @@ describe.skipIf(!enabled)('PostgreSQL automatic observed-column precision',()=>{
     expect(artifact.manifest.reads.detail).toEqual([{resource:'records',columns:['id'],bindings:[]}]);
     expect(artifact.manifest.reads.page).toEqual([{resource:'records',columns:['id','rank','status'],bindings:[]}]);
     expect(artifact.manifest.reads.count).toEqual([{resource:'records',columns:['status'],bindings:[]}]);
-    expect(artifact.manifest.reads.secured).toEqual([{resource:'secured',columns:'*',bindings:[]}]);
+    expect(artifact.manifest.reads.secured).toEqual([{resource:'secured',columns:['id','visible'],bindings:[]}]);
     await admin.unsafe(generateObserverMigration(artifact.resources,artifact.manifest,{runtimeRole:'routine_runtime'}));
     const engine=createImpact({adapter:postgresAdapter({database}),resources:artifact.resources,queries:artifact.queries});
     await engine.validate();

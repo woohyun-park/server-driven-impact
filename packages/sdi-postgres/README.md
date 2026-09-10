@@ -84,3 +84,31 @@ When upgrading from 0.1.x, see the corrected [0.2.0 migration guide](../../docs/
 Version 0.4 adds native `tx.query(text, values)` for pg, scoped lazy postgres.js tagged queries, and optional `drizzleAdapter` / `prismaAdapter` subpaths. Pin Drizzle 0.45.2 or Prisma/client/adapter-pg/driver-adapter-utils 7.10.0 with pg 8.16.3. ORM clients execute through the guarded connection; their nested transactions use SDI savepoints. Repositories receive the command client explicitly.
 
 Regenerate and install observer protocol 9 artifacts when upgrading. See [0.4 migration and support](../../docs/migrations/transaction-impact-0.4.md) for supported native methods, installation, lifecycle limits, codecs and examples.
+
+### RLS dependency analysis
+
+`compilePostgresArtifacts(database, resources, definitions, {version, searchPath,
+effectiveRole: 'authenticated'})` analyzes policies for the role used **after**
+transaction `setup` (for example, `SET LOCAL ROLE authenticated`). Queries reject
+`POSTGRES_ARTIFACT_ROLE_MISMATCH` if setup leaves another role active. Without
+`effectiveRole`, analysis conservatively unions applicable commands across roles;
+it never assumes that the catalog connection's administrator role is the runtime role.
+
+Ordinary SELECT includes SELECT/ALL `USING` expressions. Locking SELECT analysis
+also includes UPDATE `USING`, never `WITH CHECK`. Applicable permissive and
+restrictive policy references are conservatively unioned. Owner, inherited roles,
+BYPASSRLS and FORCE RLS determine applicability; SQL security-definer helpers use
+their owner's context for internal reads.
+
+Proven policy columns are added to query columns, so an UPDATE-only policy reading
+`profile.superuser` does not add profile to an ordinary badge SELECT. External
+policy reads retain unconditional, global resource dependencies and INSERT/DELETE
+observation even when UPDATE columns can be narrowed. No caller binding is inferred
+from session claims. Known complex reads widen columns; unknown function resources
+(including unsupported PL/pgSQL/dynamic SQL) require rejection or no-store. Time,
+sequence and session dependencies retain the existing freshness requirement.
+
+Compiler and validator share policy proofs in catalog artifacts. Regenerate and
+reinstall artifacts after this upgrade and after policy/function/role changes.
+Existing catalog fingerprints include policies, functions, owners, role membership
+and RLS flags. SDI does not change PostgreSQL's MVCC or policy concurrency semantics.

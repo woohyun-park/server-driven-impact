@@ -136,3 +136,29 @@ Node.js 22.18 이상이 필요합니다.
 0.4는 pg의 `tx.query(text, values)`, postgres.js의 지연 실행 tagged query, 선택 subpath인 `drizzleAdapter`·`prismaAdapter`를 제공합니다. Drizzle 0.45.2 또는 Prisma/client/adapter-pg/driver-adapter-utils 7.10.0과 pg 8.16.3 조합을 사용합니다. ORM의 실제 실행은 보호된 같은 연결을 통과하고, 중첩 transaction은 SDI savepoint에 연결됩니다. 업무 함수에는 command client를 명시적으로 전달합니다.
 
 업그레이드 시 observer protocol 9 artifact를 재생성·설치해야 합니다. 지원 메서드·설치·수명·codec·예제는 [0.4 이전 가이드](../../docs/migrations/transaction-impact-0.4.md)를 참고하세요.
+
+### RLS 의존성 분석
+
+`compilePostgresArtifacts(database, resources, definitions, {version, searchPath,
+effectiveRole: 'authenticated'})`의 역할은 `setup`에서 `SET LOCAL ROLE` 등을
+실행한 뒤의 실제 조회 역할입니다. 실행 역할이 다르면
+`POSTGRES_ARTIFACT_ROLE_MISMATCH`로 거절합니다. 생략하면 역할별 정책을 보수적으로
+합치며, catalog에 접속한 관리자 역할을 앱의 역할로 가정하지 않습니다.
+
+일반 SELECT는 SELECT/ALL 정책의 `USING`을 분석합니다. 잠금 SELECT 분석에는
+UPDATE의 `USING`도 포함하지만 `WITH CHECK`는 제외합니다. 적용되는 permissive와
+restrictive 정책의 참조는 합집합으로 유지합니다. 역할 상속, 소유자, BYPASSRLS,
+FORCE RLS를 반영하고, SQL SECURITY DEFINER 함수 내부는 함수 소유자 문맥으로 분석합니다.
+
+정책에서 읽는 컬럼을 증명하면 SQL 조회 컬럼에 합칩니다. badge의 UPDATE 정책만
+`profile.superuser`를 읽는다면 일반 badge SELECT에는 profile 의존성을 추가하지
+않습니다. 외부 행 의존성은 컬럼을 좁혀도 빈 bindings와 global scope,
+INSERT/DELETE 관찰을 유지합니다. session claim에서 caller binding을 추론하지 않습니다.
+참조 테이블이 확인된 복잡한 조회는 컬럼을 넓히고, PL/pgSQL·동적 SQL 등으로 참조
+테이블을 알 수 없으면 no-store 또는 거절이 필요합니다. 시간·sequence·session 값의
+freshness 제약도 유지합니다.
+
+compiler와 validator는 artifact의 정책 분석 근거를 공유합니다. 업그레이드 및
+정책·함수·역할 변경 후 artifact를 재생성·설치해야 합니다. 기존 fingerprint가
+정책·함수·소유자·역할 상속·RLS 상태 변경을 감지합니다. SDI는 PostgreSQL의 MVCC나
+다른 행을 참조하는 정책 자체의 동시성 문제를 변경하지 않습니다.
