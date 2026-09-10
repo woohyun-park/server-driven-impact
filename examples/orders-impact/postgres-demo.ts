@@ -3,8 +3,9 @@ import { Pool } from 'pg';
 import { pgAdapter } from '@server-driven-impact/postgres/pg';
 import { randomUUID } from 'node:crypto';
 import { createImpact } from '@server-driven-impact/runtime';
+import type { ImpactAdapter } from '@server-driven-impact/runtime/adapter';
 import { compileManifest } from '@server-driven-impact/runtime';
-import { generateObserverMigration,identifier,postgresAdapter,sql } from '@server-driven-impact/postgres';
+import { generateObserverMigration,identifier,postgresAdapter,sql,type PostgresCommandDb } from '@server-driven-impact/postgres';
 import { ordersDomain } from './domain.js';
 
 const isLoopback=(value:string|undefined)=>{if(!value)return false;const hostname=new URL(value).hostname;return hostname==='127.0.0.1'||hostname==='localhost'||hostname==='[::1]';};
@@ -22,7 +23,8 @@ try {
   const setup:NonNullable<Parameters<typeof postgresAdapter>[0]['setup']>=async(tx,scope)=>{
     await tx.unsafe("select set_config('sdi.scope',$1,true)",[String(scope)]);
   };
-  const engine=createImpact({adapter:nodePool?pgAdapter({database:nodePool,setup}):postgresAdapter({database,setup}),...definitions}),context={scope:'pack-user'};
+  const adapter=(nodePool?pgAdapter({database:nodePool,setup}):postgresAdapter({database,setup})) as unknown as ImpactAdapter<PostgresCommandDb<unknown>>;
+  const engine=createImpact({adapter,...definitions}),context={scope:'pack-user'};
   await engine.validate();
   const orders=sql`${identifier(namespace)}.${identifier('orders')}`;
   const result=await engine.command(context,db=>db.execute(sql`insert into ${orders}(id,tenant_id,customer_id,status,priority,note) values(${'one'},${'pack-user'},${'old'},${'ready'},${1},${null})`));

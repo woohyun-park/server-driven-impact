@@ -97,6 +97,24 @@ console.log(result.impact);
 await database.end();
 ```
 
+`execute()`는 SQL을 한 번 실행하고 선택한 드라이버가 반환한 결과 객체를 복사, 평탄화, 공통 형태 변환 없이 그대로 돌려줍니다. postgres.js에서는 결과가 `RowList<Record<string, unknown>[]>`이므로 행 배열처럼 순회할 수 있고 `result.count`, `result.command`도 사용할 수 있습니다. node-postgres에서는 `QueryResult<Record<string, unknown>>`이며 행은 `result.rows`, 처리 행 수는 `result.rowCount: number | null`에 있습니다. 드라이버 고유 필드는 해당 드라이버 버전의 계약을 따릅니다. SDI는 결과 컨테이너 타입을 보존하지만 SQL로부터 행 칼럼 타입을 추론하지는 않습니다.
+
+드라이버 결과는 Command 결과의 `data`에 들어갑니다.
+
+```ts
+const { data, impact } = await engine.command(
+  { scope: 'account-a' },
+  db => db.execute(sql`
+    update todos set status=${'closed'} where id=${'todo-1'}
+  `),
+);
+
+console.log(data.count); // postgres.js: number
+console.log(impact.targets);
+```
+
+`pgAdapter`에서는 `data.rowCount`를 사용하며 TypeScript 타입은 `number | null`입니다. 이 값은 실제 값이 달라진 행의 수가 아니라 PostgreSQL 명령 태그가 보고한 처리 행 수입니다. 따라서 한 행을 같은 값으로 갱신하면 처리 행 수는 `1`이어도 관찰 가능한 값이 바뀌지 않아 `impact.targets`는 비어 있을 수 있습니다. SQLSTATE 같은 실행 실패 정보는 성공 결과와 별개인 드라이버 오류 객체로 유지됩니다. `savepoint()` 안에서도 같은 결과 타입이 이어지며, 커밋 뒤 impact 수집이 실패하면 원본 결과가 `ImpactUnavailableError.data`에 보존됩니다.
+
 테이블은 미리 존재해야 하며 runtime role에는 일반적인 테이블 권한이 필요합니다. RLS 정책은 `setup`에서 설정한 scope와 같은 기준을 사용해야 합니다.
 
 운영 순서는 다음과 같습니다.
@@ -110,3 +128,5 @@ adapter는 하나의 물리 세션에서 transaction, 임시 collector, COMMIT �
 PostgreSQL 14–18에서 postgres.js와 pg를 모두 사용하는 conformance suite를 실행합니다. opaque dynamic SQL 의존성 추론, 외부 I/O 관찰, autonomous procedure, held cursor, two-phase commit은 원자적 Command 계약 밖에 있습니다. 자세한 보장 범위는 [PostgreSQL 호환 가이드](../../spec/server-driven-impact/postgres-compatibility.md)를 참고하세요.
 
 Node.js 22.18 이상이 필요합니다.
+
+0.1.x에서 올리는 경우 누락 내용을 보완한 [0.2.0 마이그레이션 문서](../../docs/migrations/postgres-0.2.md)를 참고하세요.

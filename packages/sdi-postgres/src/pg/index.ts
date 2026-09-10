@@ -4,15 +4,17 @@ import { randomUUID } from 'node:crypto';
 import type { Scalar } from '@server-driven-impact/core';
 import type { ImpactAdapter } from '@server-driven-impact/runtime/adapter';
 import { postgresAdapter } from '../postgres/index.js';
+import { executeDriver } from '../postgres/driver-execution.js';
 import type { Sql } from '../postgres/sql.js';
 import type { PostgresSetupTransaction } from '../postgres/public-types.js';
 
 const require = createRequire(import.meta.url);
 export type PgTransaction = PostgresSetupTransaction;
 export type PgRow = Record<string, unknown>;
+export type PgExecuteResult = QueryResult<PgRow>;
 export interface PgCommandDb {
   readonly scope: Scalar;
-  execute(statement: Sql): Promise<PgRow[]>;
+  execute(statement: Sql): Promise<PgExecuteResult>;
   copyFrom(statement: Sql, source: AsyncIterable<Uint8Array|string> | Iterable<Uint8Array|string>): Promise<void>;
   copyTo(statement: Sql): AsyncIterable<Uint8Array>;
   cursor(statement: Sql, batchSize?: number): AsyncIterable<PgRow[]>;
@@ -68,6 +70,7 @@ export function pgDatabase(pool: Pool) {
     let released=false;
     return {
       unsafe: ((text:string,values?:unknown[])=>unsafe(client,text,values)) as unknown as PgTransaction['unsafe'],
+      [executeDriver]: (text:string,values:readonly unknown[]) => client.query<PgRow>(text,[...values]),
       release() { if(!released){released=true;client.release();} },
       discard() { if(!released){released=true;client.release(true);} },
     };

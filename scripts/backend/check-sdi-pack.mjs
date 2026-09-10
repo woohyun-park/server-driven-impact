@@ -78,11 +78,16 @@ await writeFile(resolve(destination, 'consumer.ts'), `import {calculateImpact} f
 import {createImpact,defineQueries} from '@server-driven-impact/runtime';
 import {describeQueries} from '@server-driven-impact/runtime/debug';
 import * as postgresAdapter from '@server-driven-impact/postgres';
-import {pgAdapter} from '@server-driven-impact/postgres/pg';
+import {pgAdapter,type PgCommandDb} from '@server-driven-impact/postgres/pg';
 import {sqliteAdapter} from '@server-driven-impact/sqlite';
 for (const value of [calculateImpact,createImpact,defineQueries,describeQueries,postgresAdapter.postgresAdapter,pgAdapter,sqliteAdapter]) {
   if (typeof value !== 'function') throw new Error('MISSING_PUBLIC_API');
 }
+function resultTypes(nodePg:PgCommandDb,postgresJs:postgresAdapter.PostgresCommandDb) {
+  void nodePg.execute(postgresAdapter.sql\`select 1\`).then(result=>{const count:number|null=result.rowCount;const rows:Record<string,unknown>[]=result.rows;void count;void rows;});
+  void postgresJs.execute(postgresAdapter.sql\`select 1\`).then(result=>{const count:number=result.count;const rows:Record<string,unknown>[]=result;void count;void rows;});
+}
+void resultTypes;
 for (const path of ['@server-driven-impact/runtime/query','@server-driven-impact/postgres/dist/postgres/index.js','@server-driven-impact/core/contracts']) {
   try { await import(path); throw new Error('INTERNAL_SUBPATH_EXPOSED:'+path); }
   catch (error) { if ((error as {code?:string}).code !== 'ERR_PACKAGE_PATH_NOT_EXPORTED') throw error; }

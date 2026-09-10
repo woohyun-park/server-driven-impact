@@ -1,12 +1,12 @@
 import { expect, it, vi } from 'vitest';
 import { createImpact, q } from '@server-driven-impact/runtime';
-import { observerFingerprint, postgresAdapter } from '@server-driven-impact/postgres';
+import { observerFingerprint, postgresAdapter, sql } from '@server-driven-impact/postgres';
 import { observerInternals } from '../../packages/sdi-postgres/src/postgres/observer.js';
 import { compileManifest } from '@server-driven-impact/runtime';
 import type postgres from 'postgres';
 
 const resources = { parent: { table: 'parent', idColumn: 'id', scopeColumn: null, columns: ['id','title','secret'], selectorColumns: ['id'] } };
-function fixture(commitError?: Error & {code?:string}, failures: {collection?:Error;rollback?:Error} = {}) {
+function fixture(commitError?: Error & {code?:string}, failures: {collection?:Error;rollback?:Error;driverResult?:unknown} = {}) {
   const queries = { list: {input:{parse:(v:unknown)=>v},plan:q.select('parent')} };
   const fingerprint = observerFingerprint(resources,compileManifest(queries,resources));
   const definitionHashes=Object.fromEntries(['delete','insert','truncate','update'].map(operation=>[observerInternals.functionName('parent',operation),'hash']));
@@ -27,6 +27,7 @@ function fixture(commitError?: Error & {code?:string}, failures: {collection?:Er
     if (text === 'commit' && commitError) throw commitError;
     if(text==='rollback' && failures.rollback)throw failures.rollback;
     if(text.includes('delete from pg_temp.') && failures.collection)throw failures.collection;
+    if(text==='update parent set title=title' && failures.driverResult)return failures.driverResult;
     if (text.includes('pg_class') || text.includes('pg_trigger') || text.includes('observer_manifest')) return catalogResult(text);
     return [];
   }) };
@@ -64,9 +65,13 @@ it('distinguishes server commit rejection from an unknown network outcome',async
 });
 
 it('preserves committed data when collection fails and discards the failed session without retrying',async()=>{
-  const {engine,discard,release}=fixture(undefined,{collection:new Error('collector unavailable')});
-  const work=vi.fn(async()=>({id:'committed'}));
-  await expect(engine.command({scope:'u'},work)).rejects.toMatchObject({code:'IMPACT_UNAVAILABLE',commitState:'committed',data:{id:'committed'}});
+  const driverResult=Object.assign([] as unknown[],{count:1,command:'UPDATE'});
+  const {engine,discard,release}=fixture(undefined,{collection:new Error('collector unavailable'),driverResult});
+  const work=vi.fn(db=>db.execute(sql`update parent set title=title`));
+  let unavailable:unknown;
+  try { await engine.command({scope:'u'},work); } catch(error) { unavailable=error; }
+  expect(unavailable).toMatchObject({code:'IMPACT_UNAVAILABLE',commitState:'committed'});
+  expect((unavailable as {data:unknown}).data).toBe(driverResult);
   expect(work).toHaveBeenCalledTimes(1);expect(discard).toHaveBeenCalledOnce();expect(release).not.toHaveBeenCalled();
 });
 

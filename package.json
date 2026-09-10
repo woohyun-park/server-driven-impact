@@ -13,6 +13,7 @@
     "test:matrix": "node scripts/backend/run-sdi-postgres-matrix.mjs",
     "benchmark:core": "pnpm build && node scripts/backend/benchmark-sdi-core.mjs",
     "benchmark:postgres": "pnpm build && node scripts/backend/benchmark-sdi-postgres.mjs",
+    "benchmark:command-sql": "pnpm build && node scripts/backend/benchmark-sdi-command-sql.mjs",
     "pack:check": "node scripts/backend/check-sdi-pack.mjs",
     "build:sdi": "pnpm build",
     "typecheck:sdi": "pnpm typecheck",
