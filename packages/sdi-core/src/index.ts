@@ -22,3 +22,4 @@ export type {
 export * from './write-set.js';
 export * from './calculate.js';
 export { ImpactUnavailableError } from './errors.js';
+export type { ImpactUnavailableOptions } from './errors.js';

@@ -30,12 +30,16 @@
     "@server-driven-impact/runtime": "workspace:^"
   },
   "devDependencies": {
+    "@orpc/tanstack-query": "1.15.0",
     "@changesets/cli": "3.0.2",
     "@prisma/adapter-pg": "7.10.0",
     "@prisma/client": "7.10.0",
     "@prisma/client-runtime-utils": "7.10.0",
     "@prisma/driver-adapter-utils": "7.10.0",
     "@server-driven-impact/sqlite": "workspace:^",
+    "@server-driven-impact/cache-contract": "workspace:^",
+    "@server-driven-impact/tanstack-query": "workspace:^",
+    "@tanstack/query-core": "5.102.8",
     "@types/node": "25.9.1",
     "@types/pg": "8.15.5",
     "ajv": "8.17.1",

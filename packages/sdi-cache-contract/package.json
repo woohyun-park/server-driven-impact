@@ -1,7 +1,7 @@
 {
-  "name": "@server-driven-impact/core",
+  "name": "@server-driven-impact/cache-contract",
   "version": "0.5.0-cache-contract.2",
-  "description": "Database-neutral impact calculation from observed writes.",
+  "description": "Versioned cache-key contracts and invalidation compilation for Server-Driven Impact.",
   "type": "module",
   "license": "MIT",
   "sideEffects": false,
@@ -16,11 +16,11 @@
     "prepack": "pnpm build",
     "typecheck": "tsc -p tsconfig.check.json"
   },
+  "dependencies": { "@server-driven-impact/core": "workspace:^" },
   "engines": { "node": ">=22.18" },
   "publishConfig": { "access": "public" },
-  "repository": { "type": "git", "url": "git+https://github.com/woohyun-park/server-driven-impact.git", "directory": "packages/sdi-core" },
-  "homepage": "https://github.com/woohyun-park/server-driven-impact/tree/main/packages/sdi-core#readme",
+  "repository": { "type": "git", "url": "git+https://github.com/woohyun-park/server-driven-impact.git", "directory": "packages/sdi-cache-contract" },
+  "homepage": "https://github.com/woohyun-park/server-driven-impact/tree/main/packages/sdi-cache-contract#readme",
   "bugs": { "url": "https://github.com/woohyun-park/server-driven-impact/issues" },
-  "keywords": ["cache", "database", "invalidation", "impact"],
-  "devDependencies": { "@types/node": "25.9.1", "typescript": "6.0.3" }
+  "keywords": ["cache", "invalidation", "openapi", "query-key"]
 }
