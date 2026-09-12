@@ -150,5 +150,5 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          version=$(node -p "require('./.local/artifacts/sdi/release-manifest.json').version")
+          version=$(node -p "require('./packages/sdi-core/package.json').version")
           gh release view "sdi-v${version}" >/dev/null 2>&1 || gh release create "sdi-v${version}" --target "${GITHUB_SHA}" --generate-notes --title "SDI ${version}"

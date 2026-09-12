@@ -85,6 +85,27 @@ database.close();
 
 Command는 커밋 뒤 `{ data, impact }`를 반환합니다. 애플리케이션은 이 값을 HTTP나 메시지로 표현하는 방법과 프론트 캐시에서 사용하는 방법을 직접 정합니다.
 
+서버 소유 키를 사용할 때는 버전된 계약을 `cacheContracts`로 등록하고 `command()`의 세 번째 인자로 출력 옵션을 선택합니다. 계약 정의와 OpenAPI 메타데이터는 `@server-driven-impact/cache-contract`에서 제공합니다.
+
+필수 unrestricted string이 직접 equality predicate에 쓰이면, 내장 adapter는 `validate()`에서 실제 컬럼의 문자열 exact 비교를 증명한 뒤 캐시 무효화를 해당 입력으로 자동으로 좁힙니다. Runtime은 검증된 필드의 raw 값과 parse 결과를 매 요청 비교하며, parser가 값을 바꾸면 조회를 거절합니다. DB 검증 전이거나 collation/operator를 지원하지 않으면 endpoint fallback을 유지합니다.
+
+```ts
+// 업무 작업 하나에 아래 호출 중 하나를 사용합니다.
+const logical = await engine.command(context, work);
+// { data, impact }
+
+const cached = await engine.command(context, work, {
+  cacheContract: {id: 'web-cache', version: 1},
+});
+// { data, impact, cacheInvalidation }
+```
+
+옵션 생략, `{}`, `cacheContract: undefined`는 모두 기존 반환 타입을 유지하고 캐시 변환을 실행하지 않습니다. 계약을 명시하면 `CommandInvalidationResult<T>`, 동적인 `CommandOptions` 변수라면 결과 union을 추론하므로 `'cacheInvalidation' in result`로 구분합니다. `impact`는 항상 논리적 ImpactSet v1입니다. prerelease .0의 별도 `commandWithInvalidations()`는 .1에서 제거했습니다.
+
+각 계약은 등록된 Read를 모두 연결하거나 `no-store` / `not-consumed`로 명시적으로 제외해야 합니다. 생성 시 coverage를 검증합니다. `cacheInvalidationOptions`로 예산과 `explain` 진단 callback을 설정하며 scope/계약 버전은 command 작업을 기다리기 전에 고정합니다.
+
+선택한 계약은 transaction 시작 전에 확인합니다. 커밋 후 `ImpactUnavailableError.data`는 출력 옵션 유무와 모든 실패 단계에서 **항상 업무 결과**입니다. `phase`는 `impact-calculation` 또는 `cache-invalidation`, `impact`는 영향 계산에 성공한 경우에만 제공합니다. 전송 계층에서도 이 메타데이터를 보존하고, 후속 계산/변환 실패 때문에 command를 재시도하거나 커밋된 optimistic 상태를 rollback하지 마십시오. 캐시 재동기화는 별도로 처리합니다.
+
 `validate()`는 명시적 메서드입니다. 시작, 배포, health check처럼 애플리케이션이 선택한 시점에 호출하세요. 일반 Query와 Command는 전체 DB catalog 검증을 반복하지 않습니다.
 
 `scope`는 영향 범위를 나누는 값일 뿐 인증과 인가를 대신하지 않습니다. 검증된 사용자 정보만 context에 넣고 DB의 RLS나 동등한 정책으로 실제 접근을 통제해야 합니다.

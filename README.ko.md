@@ -56,11 +56,13 @@ OLD와 NEW를 함께 보는 것이 중요합니다. 값이 `old`에서 `new`로 
 | 패키지 | 역할 |
 | --- | --- |
 | [`@server-driven-impact/core`](./packages/sdi-core/README.ko.md) | DB 중립 계약과 순수 `ImpactSet` 계산 |
+| [`@server-driven-impact/cache-contract`](./packages/sdi-cache-contract/README.ko.md) | 버전된 캐시 키 계약, OpenAPI 메타데이터, 무효화 변환 |
 | [`@server-driven-impact/runtime`](./packages/sdi-runtime/README.ko.md) | Query/Command 실행 경계와 adapter 계약 |
 | [`@server-driven-impact/postgres`](./packages/sdi-postgres/README.ko.md) | postgres.js와 node-postgres용 PostgreSQL adapter |
 | [`@server-driven-impact/sqlite`](./packages/sdi-sqlite/README.ko.md) | Node 동기 SQLite 드라이버용 adapter |
+| [`@server-driven-impact/tanstack-query`](./packages/sdi-tanstack-query/README.ko.md) | 브라우저 안전 TanStack Query 무효화 실행부 |
 
-하나의 계산 모델은 공통 패키지에 두고 transaction과 쓰기 관찰은 DB별 adapter가 담당합니다. 프론트 패키지는 제공하지 않습니다. HTTP 응답 형식, 메시지 전달, 캐시 연동은 애플리케이션의 책임입니다.
+하나의 계산 모델은 공통 패키지에 두고 transaction과 쓰기 관찰은 DB별 adapter가 담당합니다. 애플리케이션은 논리적 `ImpactSet`을 계속 직접 소비하거나 버전된 캐시 계약과 TanStack Query 실행부를 선택적으로 사용할 수 있습니다.
 
 ## SQLite로 시작하기
 
@@ -206,7 +208,7 @@ SDI는 지원되는 작업이 SDI engine과 adapter가 소유한 transaction을 
 
 ## 커밋 결과 오류
 
-- `ImpactUnavailableError`는 DB 커밋은 성공했지만 impact를 계산할 수 없었다는 뜻입니다. `data`를 사용할 수 있고 `commitState`는 `committed`입니다.
+- `ImpactUnavailableError`는 DB 커밋은 성공했지만 영향 계산 또는 캐시 지시 생성에 실패했다는 뜻입니다. `data`는 항상 업무 결과이고 `commitState`는 `committed`입니다. `phase`로 실패 단계를 구분하며, 영향 계산에 성공했다면 `impact`도 제공합니다.
 - `CommitStateUnknownError`는 클라이언트가 커밋 성공 여부를 알 수 없다는 뜻입니다. 멱등성이 없는 Command를 무조건 재시도하면 안 됩니다.
 
 이 오류를 애플리케이션 프로토콜로 변환할 때는 `isCommitOutcomeError()`를 사용할 수 있습니다. SDI는 HTTP envelope, 재시도 정책, idempotency key, durable outbox 형식을 정하지 않습니다.

@@ -2,7 +2,7 @@
   "$schema": "https://unpkg.com/@changesets/config@3.1.1/schema.json",
   "changelog": false,
   "commit": false,
-  "fixed": [["@server-driven-impact/core", "@server-driven-impact/runtime", "@server-driven-impact/postgres", "@server-driven-impact/sqlite"]],
+  "fixed": [["@server-driven-impact/core", "@server-driven-impact/runtime", "@server-driven-impact/postgres", "@server-driven-impact/sqlite", "@server-driven-impact/cache-contract", "@server-driven-impact/tanstack-query"]],
   "linked": [],
   "access": "public",
   "baseBranch": "main",

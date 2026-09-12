@@ -1,6 +1,6 @@
 {
   "name": "@server-driven-impact/runtime",
-  "version": "0.4.1",
+  "version": "0.5.0-cache-contract.2",
   "description": "Backend query and command runtime for server-driven impact.",
   "type": "module",
   "license": "MIT",
@@ -18,7 +18,7 @@
     "prepack": "pnpm build",
     "typecheck": "tsc -p tsconfig.check.json"
   },
-  "dependencies": { "@server-driven-impact/core": "workspace:^" },
+  "dependencies": { "@server-driven-impact/cache-contract": "workspace:^", "@server-driven-impact/core": "workspace:^" },
   "engines": { "node": ">=22.18" },
   "publishConfig": { "access": "public" },
   "repository": { "type": "git", "url": "git+https://github.com/woohyun-park/server-driven-impact.git", "directory": "packages/sdi-runtime" },

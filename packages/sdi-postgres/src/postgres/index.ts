@@ -2,7 +2,7 @@ import { guardDatabase } from '@server-driven-impact/runtime/adapter';
 import type postgres from 'postgres';
 import type { WriteSet } from '@server-driven-impact/core';
 import { canonical, type Scalar } from '@server-driven-impact/core';
-import { bindAdapter, type ImpactAdapter, type QueryManifest, type Resources } from '@server-driven-impact/runtime/adapter';
+import { bindAdapter, verifiedStringComparisons, type ImpactAdapter, type QueryManifest, type Resources, type VerifiedStringComparison } from '@server-driven-impact/runtime/adapter';
 import { type ExecutableQueryPlan, type Input } from '@server-driven-impact/runtime';
 import { TrackedDb, type PostgresExecuteResult, type Transaction } from './tracked-db.js';
 import { executeDriver, type DriverExecution, type DriverQueryOptions } from './driver-execution.js';
@@ -107,6 +107,7 @@ export function postgresAdapter<T extends Record<string, unknown>>(options: Post
     [bindAdapter](resources: Resources, manifest: QueryManifest) {
       let quarantined=false;
       let equalityResources: ReadonlySet<string> = new Set();
+      let stringComparisons: readonly VerifiedStringComparison[] = [];
       const reserve=async()=>{
         if(quarantined)throw new Error('POSTGRES_SESSION_QUARANTINED');
         return options.database.reserve();
@@ -117,7 +118,8 @@ export function postgresAdapter<T extends Record<string, unknown>>(options: Post
       const fingerprint = observerFingerprint(resources,manifest);
       const layout = observerLayout(fingerprint);
       const performValidation = async (database: Transaction) => {
-        const validatedEqualityResources = await validateCatalog(database,resources,manifest);
+        const exactStringColumns = new Set<string>();
+        const validatedEqualityResources = await validateCatalog(database,resources,manifest,exactStringColumns);
         const rows = await database.unsafe(`select fingerprint,definition_hashes from ${layout.internalSchema}.${layout.metadataTable} where singleton=true`);
         if (rows[0]?.fingerprint !== fingerprint || !rows[0]?.definition_hashes || typeof rows[0].definition_hashes !== 'object') throw new Error('OBSERVER_MANIFEST_MISMATCH');
         const definitionHashes=rows[0].definition_hashes as Record<string,string>;
@@ -163,6 +165,7 @@ export function postgresAdapter<T extends Record<string, unknown>>(options: Post
           ['delete','insert','truncate','update'].map(operation => observerInternals.functionName(resource,operation))).sort();
         if (canonical(Object.keys(definitionHashes).sort()) !== canonical(expectedFunctions)) throw new Error('OBSERVER_DEFINITION_SET_MISMATCH');
         equalityResources = validatedEqualityResources;
+        stringComparisons = verifiedStringComparisons(manifest,(resource,column) => exactStringColumns.has(canonical([resource,column])));
       };
       const readTransaction = async <V>(work:(transaction:Transaction)=>Promise<V>):Promise<V> => {
         const session=await reserve();
@@ -178,10 +181,14 @@ export function postgresAdapter<T extends Record<string, unknown>>(options: Post
           throw error;
         } finally { await release(session,broken); }
       };
-      const validate = () => readTransaction(performValidation);
+      const validate = () => {
+        stringComparisons = [];
+        return readTransaction(performValidation);
+      };
       return {
         artifact: fingerprint,
         validate,
+        verifiedStringComparisons: () => stringComparisons,
         async query<V>(scope: Scalar, work: (select: (plan: ExecutableQueryPlan, input: Input) => Promise<unknown[]>) => Promise<V>): Promise<V> {
           const result = await readTransaction(async tx => {
             await options.setup?.(tx, scope);

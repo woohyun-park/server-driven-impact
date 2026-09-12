@@ -4,16 +4,21 @@ import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 
 const root = resolve(import.meta.dirname, '../..');
-const artifactDirectory = resolve(root, '.local/artifacts/sdi');
+const expectedVersion = JSON.parse(await readFile(resolve(root, 'packages/sdi-core/package.json'), 'utf8')).version;
+const artifactDirectory = resolve(root, '.local/artifacts/sdi', expectedVersion);
 const release = JSON.parse(await readFile(resolve(artifactDirectory, 'release-manifest.json'), 'utf8'));
 const channel = process.argv.slice(2).find(value => ['dry-run', 'next', 'latest'].includes(value));
 if (!['dry-run', 'next', 'latest'].includes(channel)) throw new Error('Usage: node scripts/backend/publish-sdi.mjs <dry-run|next|latest>');
+if (release.version !== expectedVersion) throw new Error('RELEASE_VERSION_MISMATCH');
+if (channel === 'latest' && release.version.includes('-')) throw new Error('PRERELEASE_REQUIRES_NEXT_TAG');
 
 const packages = [
   ['sdi-core', '@server-driven-impact/core'],
+  ['sdi-cache-contract', '@server-driven-impact/cache-contract'],
   ['sdi-runtime', '@server-driven-impact/runtime'],
   ['sdi-postgres', '@server-driven-impact/postgres'],
   ['sdi-sqlite', '@server-driven-impact/sqlite'],
+  ['sdi-tanstack-query', '@server-driven-impact/tanstack-query'],
 ];
 
 function npm(args, options = {}) {

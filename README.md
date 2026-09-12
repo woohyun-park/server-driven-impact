@@ -56,11 +56,13 @@ Using both OLD and NEW values matters. A row moved from `old` to `new` can make 
 | Package | Responsibility |
 | --- | --- |
 | [`@server-driven-impact/core`](./packages/sdi-core) | Database-neutral contracts and pure `ImpactSet` calculation |
+| [`@server-driven-impact/cache-contract`](./packages/sdi-cache-contract) | Versioned cache-key contracts, OpenAPI metadata, and invalidation compilation |
 | [`@server-driven-impact/runtime`](./packages/sdi-runtime) | Query/Command execution boundary and adapter contract |
 | [`@server-driven-impact/postgres`](./packages/sdi-postgres) | PostgreSQL adapter for postgres.js and node-postgres |
 | [`@server-driven-impact/sqlite`](./packages/sdi-sqlite) | SQLite adapter for Node's synchronous SQLite driver |
+| [`@server-driven-impact/tanstack-query`](./packages/sdi-tanstack-query) | Browser-safe TanStack Query invalidation executor |
 
-The packages keep one calculation model while leaving transaction and observation details to each database adapter. A frontend package is intentionally absent: HTTP response shapes, message delivery, and cache integration belong to the application.
+The packages keep one calculation model while leaving transaction and observation details to each database adapter. Applications may consume logical `ImpactSet` values directly or opt into a versioned cache contract and the TanStack Query executor.
 
 ## Quick start with SQLite
 
@@ -206,10 +208,12 @@ The library deliberately fails or widens when it cannot prove a narrow result. D
 
 ## Commit outcome errors
 
-- `ImpactUnavailableError` means the database commit succeeded but the impact result could not be calculated. Its `data` is available and `commitState` is `committed`.
+- `ImpactUnavailableError` means the database committed but impact calculation or cache-invalidation compilation failed. `data` is always the business result, `commitState` is `committed`, `phase` identifies the failed stage, and `impact` is available if already calculated.
 - `CommitStateUnknownError` means the client cannot determine whether the commit succeeded. Do not blindly retry a non-idempotent Command.
 
 Use `isCommitOutcomeError()` when mapping these cases into an application protocol. SDI does not impose an HTTP envelope, retry policy, idempotency key, or durable outbox.
+
+See the [cache-contract migration guide](./docs/migrations/cache-contract-0.5.md) for existing RPC keys, structured inputs, coverage, post-commit errors, and local prerelease installation.
 
 ## Development
 
