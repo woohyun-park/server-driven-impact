@@ -211,7 +211,7 @@ function compile(
   const contract = defineCacheContract(candidate);
   validateCacheCompileOptions(options);
   if (!isScalar(scope)) throw new Error('INVALID_CACHE_SCOPE');
-  if (!impact || impact.protocolVersion !== 1) throw new Error('UNSUPPORTED_IMPACT_VERSION');
+  if (impact?.protocolVersion !== 1) throw new Error('UNSUPPORTED_IMPACT_VERSION');
   if (!Array.isArray(impact.targets) || impact.targets.length > LIMITS.endpoints)
     throw new Error('INVALID_IMPACT_TARGETS');
   const invalidations: CacheInvalidation[] = [];

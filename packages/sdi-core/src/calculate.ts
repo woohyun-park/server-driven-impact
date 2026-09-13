@@ -12,7 +12,7 @@ import {
   type ImpactSet,
   type ImpactTarget,
 } from './contracts.js';
-import { WriteSet } from './write-set.js';
+import type { WriteSet } from './write-set.js';
 import { ImpactUnavailableError } from './errors.js';
 export interface Decision {
   resource: string;

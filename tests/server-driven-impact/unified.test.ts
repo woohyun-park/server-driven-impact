@@ -149,12 +149,12 @@ describe('unified API / actual SQLite', () => {
         }),
       ),
     );
-    results.forEach((result, i) =>
+    results.forEach((result, i) => {
       expect(result.impact.targets.find(t => t.endpoint === 'orders.list')?.selector).toEqual({
         kind: 'inputs',
         values: [{ customer: 'customer' + i }],
-      }),
-    );
+      });
+    });
   });
   it('rejects overlapping savepoints and unfinished writes', async () => {
     const { engine } = fixture();

@@ -1,12 +1,4 @@
-import type {
-  Pool,
-  PoolClient,
-  QueryResult,
-  QueryConfig,
-  QueryArrayConfig,
-  QueryArrayResult,
-  QueryResultRow,
-} from 'pg';
+import type { Pool, PoolClient, QueryResult, QueryConfig, QueryArrayResult, QueryResultRow } from 'pg';
 import { createRequire } from 'node:module';
 import { randomUUID } from 'node:crypto';
 import type { Scalar } from '@server-driven-impact/core';
@@ -50,6 +42,7 @@ export function pgDatabase(pool: Pool) {
         return results.flatMap((value: QueryResult) => value.rows);
       }));
     return {
+      // biome-ignore lint/suspicious/noThenProperty: intentional thenable - this object is the lazy pending-query result callers `await` directly, matching the `postgres` driver's tagged-template query API.
       then: (resolve: (rows: Record<string, unknown>[]) => unknown, reject: (error: unknown) => unknown) =>
         run().then(resolve, reject),
       catch: (reject: (error: unknown) => unknown) => run().catch(reject),
@@ -78,6 +71,7 @@ export function pgDatabase(pool: Pool) {
           try {
             await client.query(`close ${name}`);
           } catch (error) {
+            // biome-ignore lint/correctness/noUnsafeFinally: intentional - only surface the close error when the cursor loop itself did not already fail, so the original error is never masked.
             if (!failed) throw error;
           }
         }

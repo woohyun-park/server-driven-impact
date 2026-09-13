@@ -1,9 +1,9 @@
 import type postgres from 'postgres';
 import type { TransactionSql } from 'postgres';
 import { sql, Sql, identifier } from './sql.js';
-import { WriteSet } from '@server-driven-impact/core';
-import { type Scalar } from '@server-driven-impact/core';
-import { type Resources } from '@server-driven-impact/runtime/adapter';
+import type { WriteSet } from '@server-driven-impact/core';
+import type { Scalar } from '@server-driven-impact/core';
+import type { Resources } from '@server-driven-impact/runtime/adapter';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { assertCommandSql } from './command-sql.js';
@@ -112,8 +112,7 @@ export class TrackedDb<TResult = PostgresExecuteResult> {
     options: { concurrently?: boolean; withData?: boolean } = {},
   ): Promise<void> {
     const definition = this.resources[resource];
-    if (!definition || definition.postgresKind !== 'materialized-view')
-      throw new Error('MATERIALIZED_VIEW_RESOURCE_REQUIRED');
+    if (definition?.postgresKind !== 'materialized-view') throw new Error('MATERIALIZED_VIEW_RESOURCE_REQUIRED');
     if (options.concurrently && options.withData === false) throw new Error('INVALID_REFRESH_OPTIONS');
     const concurrently = options.concurrently ? new Sql(' concurrently') : new Sql('');
     const data = options.withData === false ? new Sql(' with no data') : new Sql(' with data');

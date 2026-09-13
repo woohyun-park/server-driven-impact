@@ -45,7 +45,9 @@ export function validateTemplate(query: CacheQueryContract): void {
         break;
       case 'array':
         if (!Array.isArray(node.items)) throw new Error('INVALID_CACHE_KEY_TEMPLATE');
-        node.items.forEach((child, index) => walk(child, depth + 1, true, index === node.items.length - 1));
+        node.items.forEach((child, index) => {
+          walk(child, depth + 1, true, index === node.items.length - 1);
+        });
         break;
       default:
         throw new Error('INVALID_CACHE_KEY_TEMPLATE');

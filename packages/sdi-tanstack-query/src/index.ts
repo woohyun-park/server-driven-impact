@@ -43,7 +43,7 @@ function validatePayload(
   payload: CacheInvalidationSet,
   expected: Pick<ApplyCacheInvalidationsOptions, 'contract' | 'scope'>,
 ): void {
-  if (!payload || payload.protocolVersion !== 1) throw new Error('UNSUPPORTED_CACHE_INVALIDATION_PROTOCOL');
+  if (payload?.protocolVersion !== 1) throw new Error('UNSUPPORTED_CACHE_INVALIDATION_PROTOCOL');
   if (
     typeof payload.contractId !== 'string' ||
     !payload.contractId.length ||

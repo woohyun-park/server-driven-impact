@@ -110,7 +110,9 @@ export async function compilePostgresQuery(
   const functionReferences = new Map<string, { schema?: string; name: string; arguments: number }>();
   function collectReferences(value: unknown, ctes: Set<string>): void {
     if (Array.isArray(value)) {
-      value.forEach(child => collectReferences(child, ctes));
+      value.forEach(child => {
+        collectReferences(child, ctes);
+      });
       return;
     }
     if (!value || typeof value !== 'object') return;
@@ -136,7 +138,9 @@ export async function compilePostgresQuery(
         functionReferences.set(canonical(reference), reference);
       }
     }
-    Object.values(value).forEach(child => collectReferences(child, ctes));
+    Object.values(value).forEach(child => {
+      collectReferences(child, ctes);
+    });
   }
   function collectSelectReferences(select: Json, inherited: Set<string>): void {
     const withClause = select.withClause?.WithClause ?? select.withClause;
@@ -264,7 +268,7 @@ export async function compilePostgresQuery(
   }
   function atomic(value: unknown): Binding | undefined {
     const expression = node(value, 'A_Expr');
-    if (!expression || expression.kind !== 'AEXPR_OP' || stringNode(expression.name?.[0]) !== '=') return undefined;
+    if (expression?.kind !== 'AEXPR_OP' || stringNode(expression.name?.[0]) !== '=') return undefined;
     const leftColumn = column(expression.lexpr),
       rightColumn = column(expression.rexpr);
     const leftParameter = unwrapParameter(expression.lexpr),

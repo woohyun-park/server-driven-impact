@@ -10,14 +10,13 @@ import {
   type Resources,
   type VerifiedStringComparison,
 } from '@server-driven-impact/runtime/adapter';
-import { type ExecutableQueryPlan, type Input } from '@server-driven-impact/runtime';
+import type { ExecutableQueryPlan, Input } from '@server-driven-impact/runtime';
 import { TrackedDb, type PostgresExecuteResult, type Transaction } from './tracked-db.js';
 import { executeDriver, type DriverExecution, type DriverQueryOptions } from './driver-execution.js';
 import { compileSelect } from './select.js';
 import { validateCatalog } from './catalog.js';
-import { identifier, sql, Sql } from './sql.js';
+import { sql, Sql } from './sql.js';
 import {
-  generateObserverMigration,
   observationRelations,
   observerFingerprint,
   observerInternals,
@@ -84,6 +83,7 @@ function nativeClient<TResult>(db: CommandOperations<TResult>): PostgresCommandD
         ? Promise.reject(new Error('QUERY_ALREADY_EXECUTED'))
         : (execution ??= db.query(statement.text, statement.values));
     return {
+      // biome-ignore lint/suspicious/noThenProperty: intentional thenable - PostgresPendingQuery is awaited directly by callers, matching the lazy pending-query API used across the postgres adapter.
       then: (resolve, reject) => run().then(resolve, reject),
       catch: reject => run().catch(reject),
       finally: callback => run().finally(callback),
@@ -330,6 +330,7 @@ export function postgresAdapter<T extends Record<string, unknown>>(
                 await guarded.settle();
               } catch (error) {
                 broken = true;
+                // biome-ignore lint/correctness/noUnsafeFinally: intentional - settle() failures must propagate from this cleanup finally so the caller sees the transaction as broken; tracked.close() still runs via its own nested finally.
                 throw error;
               } finally {
                 tracked.close();

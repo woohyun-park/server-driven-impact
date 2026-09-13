@@ -20,7 +20,6 @@ import {
   type PostgresSourceDefinition,
 } from '@server-driven-impact/postgres';
 import { pgAdapter, pgDatabase, type PgExecuteResult } from '@server-driven-impact/postgres/pg';
-import { compileManifest } from '@server-driven-impact/runtime';
 import type { ImpactAdapter } from '@server-driven-impact/runtime/adapter';
 
 const adminUrl = process.env.SDI_POSTGRES_ADMIN_URL;

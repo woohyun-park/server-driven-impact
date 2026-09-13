@@ -19,6 +19,13 @@
       "arrowParentheses": "asNeeded"
     }
   },
-  "linter": { "enabled": true, "rules": { "recommended": true } },
+  "linter": {
+    "enabled": true,
+    "rules": {
+      "recommended": true,
+      "style": { "noNonNullAssertion": "off", "useTemplate": "off" },
+      "suspicious": { "noExplicitAny": "off", "noAssignInExpressions": "off" }
+    }
+  },
   "assist": { "actions": { "source": { "organizeImports": "off" } } }
 }

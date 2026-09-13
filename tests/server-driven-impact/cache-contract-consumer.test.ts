@@ -359,7 +359,9 @@ describe('verified string cache precision', () => {
     );
     const values = ['Alice', 'alice', 'Alice ', '1', '01', 'é', 'e\u0301'];
     const statement = database.prepare('insert into profiles values(?,?,?)');
-    values.forEach((username, index) => statement.run(String(index), username, '2000-01-01'));
+    values.forEach((username, index) => {
+      statement.run(String(index), username, '2000-01-01');
+    });
     const engine = profileEngine(database);
     await engine.validate();
     for (const username of values) {

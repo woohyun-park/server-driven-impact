@@ -195,7 +195,6 @@ export function createPostgresCatalogResolver(
         throw new Error(
           `UNRESOLVED_QUERY_FUNCTION:${reference.schema ? `${reference.schema}.` : ''}${reference.name}/${reference.arguments}`,
         );
-      const first = rows[0];
       const candidates = rows;
       // A non-immutable builtin can change without any observed table write
       // (`now`, `random`, sequence/session helpers, and similar functions).
@@ -226,7 +225,7 @@ export function createPostgresCatalogResolver(
     if (path.size >= 128 || ++expansions > 4096) throw new Error('CATALOG_DEPENDENCY_LIMIT');
     path.add(objectKey);
     let directResource: string | undefined;
-    let bodyReads: string[] = [];
+    const bodyReads: string[] = [];
     if (object.kind === 'relation') {
       const rows = (await database.unsafe(
         `select c.oid::text,n.nspname as schema_name,c.relname as object_name,c.relkind,c.relispartition,c.relhasrules,

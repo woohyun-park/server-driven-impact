@@ -12,7 +12,7 @@ import {
   type VerifiedStringComparison,
 } from '@server-driven-impact/runtime/adapter';
 import { guardDatabase } from '@server-driven-impact/runtime/adapter';
-import { type Input } from '@server-driven-impact/runtime';
+import type { Input } from '@server-driven-impact/runtime';
 import { compileSelect } from './select.js';
 import { createHash } from 'node:crypto';
 import { ImpactUnavailableError } from '@server-driven-impact/runtime/adapter';
@@ -132,7 +132,7 @@ function validateCatalog(database: DatabaseSync, resources: Resources): Readonly
   for (const [id, resource] of Object.entries(resources)) {
     if (resource.schema && resource.schema !== 'main') throw new Error('SQLITE_MAIN_SCHEMA_ONLY');
     const entry = database.prepare('select type, sql from sqlite_schema where name=?').get(resource.table);
-    if (!entry || entry.type !== 'table' || /CREATE\s+VIRTUAL\s+TABLE/i.test(String(entry.sql)))
+    if (entry?.type !== 'table' || /CREATE\s+VIRTUAL\s+TABLE/i.test(String(entry.sql)))
       throw new Error('UNSUPPORTED_TABLE:' + id);
     const schemaTokens = sqlTokens(String(entry.sql));
     if (

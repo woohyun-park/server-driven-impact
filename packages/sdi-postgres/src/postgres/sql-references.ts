@@ -7,7 +7,9 @@ export function sqlReferences(tree: unknown) {
   const string = (value: Json) => value?.String?.sval ?? value?.String?.str;
   function visit(value: unknown, inherited: Set<string>) {
     if (Array.isArray(value)) {
-      value.forEach(child => visit(child, inherited));
+      value.forEach(child => {
+        visit(child, inherited);
+      });
       return;
     }
     if (!value || typeof value !== 'object') return;
@@ -49,7 +51,9 @@ export function sqlReferences(tree: unknown) {
         functions.set(JSON.stringify(reference), reference);
       }
     }
-    Object.values(record).forEach(child => visit(child, inherited));
+    Object.values(record).forEach(child => {
+      visit(child, inherited);
+    });
   }
   visit(tree, new Set());
   return { relations: [...relations.values()], functions: [...functions.values()], nonRow, unresolvedExpression };
