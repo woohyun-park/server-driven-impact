@@ -218,8 +218,10 @@ export function compileManifest(queries: Record<string, QueryDefinition>, resour
   Object.keys(queries).sort().forEach(endpoint);
   const sortedSources = Object.fromEntries(Object.entries(sources).sort(([a], [b]) => a.localeCompare(b)));
   const dependents: Record<string, string[]> = Object.create(null);
-  for (const [id, tables] of Object.entries(sortedSources))
+  for (const [id, tables] of Object.entries(sortedSources)) {
+    // biome-ignore lint/suspicious/noAssignInExpressions: intentional `??=` default-initialization - lazily creates the per-table dependents bucket on first use so it can be pushed to in the same expression.
     for (const table of tables) (dependents[table] ??= []).push(id);
+  }
   function readSelect(
     resource: ResourceId,
     options: SelectOptions,

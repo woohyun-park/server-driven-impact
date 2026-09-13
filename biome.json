@@ -24,7 +24,7 @@
     "rules": {
       "recommended": true,
       "style": { "noNonNullAssertion": "off", "useTemplate": "off" },
-      "suspicious": { "noExplicitAny": "off", "noAssignInExpressions": "off" }
+      "suspicious": { "noExplicitAny": "off" }
     }
   },
   "assist": { "actions": { "source": { "organizeImports": "off" } } }

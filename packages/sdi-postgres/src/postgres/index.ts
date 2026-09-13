@@ -81,7 +81,8 @@ function nativeClient<TResult>(db: CommandOperations<TResult>): PostgresCommandD
     const run = () =>
       streaming
         ? Promise.reject(new Error('QUERY_ALREADY_EXECUTED'))
-        : (execution ??= db.query(statement.text, statement.values));
+        : // biome-ignore lint/suspicious/noAssignInExpressions: intentional `??=` memoization - caches the single query execution promise so repeated `run()` calls (then/catch/execute) share one in-flight request instead of re-querying.
+          (execution ??= db.query(statement.text, statement.values));
     return {
       // biome-ignore lint/suspicious/noThenProperty: intentional thenable - PostgresPendingQuery is awaited directly by callers, matching the lazy pending-query API used across the postgres adapter.
       then: (resolve, reject) => run().then(resolve, reject),
