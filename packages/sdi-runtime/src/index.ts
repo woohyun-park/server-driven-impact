@@ -24,6 +24,8 @@ export type {
   Join,
   PostgresQueryPlan,
   ExecutableQueryPlan,
+  Typed,
+  OutputOf,
 } from './query/index.js';
 export type { QueryManifest, Manifest } from './query/index.js';
 export type { Resource, Resources } from './resources.js';

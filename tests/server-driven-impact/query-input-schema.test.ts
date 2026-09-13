@@ -65,7 +65,7 @@ describe('Standard Schema query inputs', () => {
     expect(await fixture().query('todos.byStatus', { status: 'open' }, context)).toEqual([{ id: 't1' }]);
   });
   it('rejects issues with the input error code and keeps issues as the cause', async () => {
-    await expect(fixture().query('todos.byStatus', { status: 1 }, context)).rejects.toMatchObject({
+    await expect(fixture().query('todos.byStatus', { status: 1 } as never, context)).rejects.toMatchObject({
       message: 'INVALID_QUERY_INPUT:status must be a string',
       cause: [{ message: 'status must be a string' }],
     });

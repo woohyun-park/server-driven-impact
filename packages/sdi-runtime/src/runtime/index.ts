@@ -7,10 +7,11 @@ import {
   executePlan,
   requiresNoStore,
   type Input,
+  type OutputOf,
   type Plan,
   type QueryDefinition,
 } from '../query/plan.js';
-import { toParse } from '../query/input.js';
+import { toParse, type InputOf } from '../query/input.js';
 import { bindAdapter, type ImpactAdapter } from './adapter.js';
 import { ImpactUnavailableError } from './errors.js';
 import {
@@ -182,21 +183,31 @@ export function createImpact<Db, Q extends Record<string, QueryDefinition>>(opti
   return Object.freeze({
     artifact: adapter.artifact,
     validate: () => adapter.validate(),
-    async query(endpoint: keyof Q & string, input: unknown, context: Context): Promise<unknown> {
+    async query<K extends keyof Q & string>(
+      endpoint: K,
+      input: InputOf<Q[K]['input']>,
+      context: Context,
+    ): Promise<OutputOf<Q[K]['plan']>> {
       const scope = scopeOf(context);
       if (!Object.hasOwn(queries, endpoint)) throw new Error('UNKNOWN_QUERY');
       if (requiresNoStore(queries[endpoint].plan, queries)) throw new Error('QUERY_REQUIRES_NO_STORE_EXECUTION');
       const parsed = await parseInput(queries[endpoint], input, exactStringInputs(endpoint));
-      return adapter.query(scope, select => executePlan(queries[endpoint].plan, parsed, queries, select, resources));
+      return adapter.query(scope, select =>
+        executePlan(queries[endpoint].plan, parsed, queries, select, resources),
+      ) as Promise<OutputOf<Q[K]['plan']>>;
     },
     /** Each invocation executes anew. This response must never enter a reusable query cache. */
-    async queryUncached(endpoint: keyof Q & string, input: unknown, context: Context) {
+    async queryUncached<K extends keyof Q & string>(
+      endpoint: K,
+      input: InputOf<Q[K]['input']>,
+      context: Context,
+    ): Promise<{ data: OutputOf<Q[K]['plan']>; cachePolicy: 'no-store' }> {
       const scope = scopeOf(context);
       if (!Object.hasOwn(queries, endpoint)) throw new Error('UNKNOWN_QUERY');
       const parsed = await parseInput(queries[endpoint], input, exactStringInputs(endpoint));
-      const data = await adapter.query(scope, select =>
+      const data = (await adapter.query(scope, select =>
         executePlan(queries[endpoint].plan, parsed, queries, select, resources),
-      );
+      )) as OutputOf<Q[K]['plan']>;
       return { data, cachePolicy: 'no-store' as const };
     },
     command,

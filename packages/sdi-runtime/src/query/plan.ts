@@ -36,6 +36,10 @@ export function validateManifest(manifest: QueryManifest, resources: Resources):
   if (byteLength(manifest) > LIMITS.manifestBytes) throw new Error('MANIFEST_LIMIT');
 }
 
+/** Phantom result type carried by builders; the key never exists at runtime. */
+export type Typed<O> = { readonly '~output'?: O };
+export type OutputOf<P> = P extends Typed<infer O> ? O : unknown;
+
 export type Value = { kind: 'input'; field: string } | { kind: 'literal'; value: unknown };
 export type AtomicPredicate = {
   kind?: 'atomic';
@@ -64,9 +68,14 @@ export type SelectOptions = {
   limit?: PageValue;
   offset?: PageValue;
 };
-export type SelectPlan = { kind: 'select'; resource: ResourceId; options: SelectOptions; result?: 'rows' | 'count' };
+export type SelectPlan<O = unknown> = {
+  kind: 'select';
+  resource: ResourceId;
+  options: SelectOptions;
+  result?: 'rows' | 'count';
+} & Typed<O>;
 /** PostgreSQL SQL compiled ahead of runtime with its read dependencies attached. */
-export type PostgresQueryPlan = {
+export type PostgresQueryPlan<O = unknown> = {
   kind: 'postgres-query';
   text: string;
   parameters: readonly string[];
@@ -75,19 +84,22 @@ export type PostgresQueryPlan = {
   searchPath?: readonly string[];
   catalog?: PostgresCatalogStamp;
   policyProof?: PostgresPolicyProof;
-};
-export type ExecutableQueryPlan = SelectPlan | PostgresQueryPlan;
-export type Plan =
-  | SelectPlan
-  | PostgresQueryPlan
-  | { kind: 'value'; value: unknown }
-  | { kind: 'call'; endpoint: string; input?: (input: Input) => Input }
-  | { kind: 'combine'; children: Record<string, Plan> }
-  | { kind: 'when'; test: (input: Input) => boolean; yes: Plan; no: Plan }
-  | { kind: 'bind'; parent: Plan; child: Plan; input: (data: unknown, input: Input) => Input | null }
-  | { kind: 'map'; source: Plan; project: (data: unknown, input: Input) => unknown }
-  | { kind: 'choose'; choices: Record<string, Plan>; choose: (input: Input) => string };
-export type QueryDefinition<S extends InputSchema<any, any> = InputSchema<any, any>> = { input: S; plan: Plan };
+} & Typed<O>;
+export type ExecutableQueryPlan = SelectPlan<any> | PostgresQueryPlan<any>;
+export type Plan<O = unknown> =
+  | SelectPlan<O>
+  | PostgresQueryPlan<O>
+  | ({ kind: 'value'; value: unknown } & Typed<O>)
+  | ({ kind: 'call'; endpoint: string; input?: (input: Input) => Input } & Typed<O>)
+  | ({ kind: 'combine'; children: Record<string, Plan> } & Typed<O>)
+  | ({ kind: 'when'; test: (input: Input) => boolean; yes: Plan; no: Plan } & Typed<O>)
+  | ({ kind: 'bind'; parent: Plan; child: Plan; input: (data: unknown, input: Input) => Input | null } & Typed<O>)
+  | ({ kind: 'map'; source: Plan; project: (data: unknown, input: Input) => unknown } & Typed<O>)
+  | ({ kind: 'choose'; choices: Record<string, Plan>; choose: (input: Input) => string } & Typed<O>);
+export type QueryDefinition<
+  S extends InputSchema<any, any> = InputSchema<any, any>,
+  P extends Plan<any> = Plan<any>,
+> = { input: S; plan: P };
 export type Manifest = QueryManifest & { sources: Record<string, string[]>; dependents: Record<string, string[]> };
 
 /** A no-store child makes the entire composed endpoint non-cacheable. */
@@ -114,7 +126,10 @@ export function requiresNoStore(plan: Plan, queries: Record<string, QueryDefinit
 }
 
 export const q = {
-  select(resource: ResourceId, options: SelectOptions = {}): SelectPlan {
+  select<Row extends Record<string, unknown> = Record<string, unknown>>(
+    resource: ResourceId,
+    options: SelectOptions = {},
+  ): SelectPlan<Row[]> {
     return { kind: 'select', resource, options };
   },
   input(field: string): Value {
@@ -138,28 +153,31 @@ export const q = {
   not(predicate: Predicate): Predicate {
     return { kind: 'not', predicate };
   },
-  count(resource: ResourceId, options: SelectOptions = {}): SelectPlan {
+  count(resource: ResourceId, options: SelectOptions = {}): SelectPlan<number> {
     return { kind: 'select', resource, options, result: 'count' };
   },
-  value(value: unknown): Plan {
+  value<T>(value: T): Plan<T> {
     return { kind: 'value', value };
   },
-  call(endpoint: string, input?: (input: Input) => Input): Plan {
+  call<O = unknown>(endpoint: string, input?: (input: Input) => Input): Plan<O> {
     return { kind: 'call', endpoint, ...(input ? { input } : {}) };
   },
-  combine(children: Record<string, Plan>): Plan {
+  combine<C extends Record<string, Plan<any>>>(children: C): Plan<{ [K in keyof C]: OutputOf<C[K]> }> {
     return { kind: 'combine', children };
   },
-  when(test: (input: Input) => boolean, yes: Plan, no: Plan): Plan {
+  when<A, B>(test: (input: Input) => boolean, yes: Plan<A>, no: Plan<B>): Plan<A | B> {
     return { kind: 'when', test, yes, no };
   },
-  bind(parent: Plan, child: Plan, input: (data: unknown, input: Input) => Input | null): Plan {
-    return { kind: 'bind', parent, child, input };
+  bind<P, C>(parent: Plan<P>, child: Plan<C>, input: (data: P, input: Input) => Input | null): Plan<C | []> {
+    return { kind: 'bind', parent, child, input: input as (data: unknown, input: Input) => Input | null };
   },
-  map(source: Plan, project: (data: unknown, input: Input) => unknown): Plan {
-    return { kind: 'map', source, project };
+  map<S, R>(source: Plan<S>, project: (data: S, input: Input) => R): Plan<R> {
+    return { kind: 'map', source, project: project as (data: unknown, input: Input) => unknown };
   },
-  choose(choices: Record<string, Plan>, choose: (input: Input) => string): Plan {
+  choose<C extends Record<string, Plan<any>>>(
+    choices: C,
+    choose: (input: Input) => keyof C & string,
+  ): Plan<OutputOf<C[keyof C]>> {
     return { kind: 'choose', choices, choose };
   },
 };
