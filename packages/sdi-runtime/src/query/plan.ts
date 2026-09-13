@@ -8,7 +8,7 @@ import {
   type ReadDependency,
 } from '@server-driven-impact/core';
 import { validateResources, type Resources } from '../resources.js';
-import { toParse, type Input, type InputSchema } from './input.js';
+import { assertInputPreserved, type Input, type InputParser, type InputSchema } from './input.js';
 export type { Input } from './input.js';
 type ResourceId = string;
 export type { ReadDependency } from '@server-driven-impact/core';
@@ -93,7 +93,7 @@ export type PostgresQueryPlan<O = unknown> = {
   catalog?: PostgresCatalogStamp;
   policyProof?: PostgresPolicyProof;
 } & Typed<O>;
-export type ExecutableQueryPlan = SelectPlan<any> | PostgresQueryPlan<any>;
+export type ExecutableQueryPlan = SelectPlan<unknown> | PostgresQueryPlan<unknown>;
 export type Plan<O = unknown> =
   | SelectPlan<O>
   | PostgresQueryPlan<O>
@@ -108,6 +108,8 @@ export type QueryDefinition<
   S extends InputSchema<unknown, unknown> = InputSchema<unknown, unknown>,
   P extends Plan<unknown> = Plan<unknown>,
 > = { input: S; plan: P };
+/** A definition after `createImpact` has normalized either input style into one `{ parse }`. */
+export type NormalizedQuery = { input: InputParser<unknown>; plan: Plan };
 export type Manifest = QueryManifest & { sources: Record<string, string[]>; dependents: Record<string, string[]> };
 
 /** A no-store child makes the entire composed endpoint non-cacheable. */
@@ -134,10 +136,9 @@ export function requiresNoStore(plan: Plan, queries: Record<string, QueryDefinit
 }
 
 export const q = {
-  select<Row extends object = Record<string, unknown>>(
-    resource: ResourceId,
-    options: SelectOptions = {},
-  ): SelectPlan<Row[]> {
+  // `Row` carries no constraint and defaults to `unknown`: an `interface` has no implicit index
+  // signature, and a `Record<string, unknown>` default would make `unknown[] as Todo[]` fail at the call site.
+  select<Row = unknown>(resource: ResourceId, options: SelectOptions = {}): SelectPlan<Row[]> {
     return { kind: 'select', resource, options };
   },
   input(field: string): Value {
@@ -417,9 +418,10 @@ export function compileManifest(queries: Record<string, QueryDefinition>, resour
 export async function executePlan(
   plan: Plan,
   input: Input,
-  queries: Record<string, QueryDefinition>,
+  queries: Record<string, NormalizedQuery>,
   execute: (plan: ExecutableQueryPlan, input: Input) => Promise<unknown[]>,
   resources: Resources,
+  exactStringInputs: (endpoint: string) => readonly string[],
 ): Promise<unknown> {
   switch (plan.kind) {
     case 'select': {
@@ -433,29 +435,35 @@ export async function executePlan(
     case 'call': {
       if (!Object.hasOwn(queries, plan.endpoint)) throw new Error(`Query missing: ${plan.endpoint}`);
       const query = queries[plan.endpoint];
-      const parsed = (await toParse(query.input)(plan.input ? plan.input(input) : input)) as Input;
-      return executePlan(query.plan, parsed, queries, execute, resources);
+      const raw = plan.input ? plan.input(input) : input;
+      const parsed = await query.input.parse(raw);
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('INVALID_QUERY_INPUT');
+      // The nested schema re-parses a value the caller's cache key already committed to, so it needs the
+      // same preservation check the top level applies. Only without an input mapper: `readsFor` already
+      // drops this endpoint's bindings when one is present, which widens impact instead of narrowing it.
+      if (!plan.input) assertInputPreserved(raw, parsed, exactStringInputs(plan.endpoint));
+      return executePlan(query.plan, parsed as Input, queries, execute, resources, exactStringInputs);
     }
     case 'combine': {
       // One connection/snapshot; keep statements sequential rather than pretending parallel transactions.
       const data: Record<string, unknown> = {};
       for (const [key, child] of Object.entries(plan.children))
-        data[key] = await executePlan(child, input, queries, execute, resources);
+        data[key] = await executePlan(child, input, queries, execute, resources, exactStringInputs);
       return data;
     }
     case 'when':
-      return executePlan(plan.test(input) ? plan.yes : plan.no, input, queries, execute, resources);
+      return executePlan(plan.test(input) ? plan.yes : plan.no, input, queries, execute, resources, exactStringInputs);
     case 'bind': {
-      const data = await executePlan(plan.parent, input, queries, execute, resources);
+      const data = await executePlan(plan.parent, input, queries, execute, resources, exactStringInputs);
       const next = plan.input(data, input);
-      return next === null ? [] : executePlan(plan.child, next, queries, execute, resources);
+      return next === null ? [] : executePlan(plan.child, next, queries, execute, resources, exactStringInputs);
     }
     case 'map':
-      return plan.project(await executePlan(plan.source, input, queries, execute, resources), input);
+      return plan.project(await executePlan(plan.source, input, queries, execute, resources, exactStringInputs), input);
     case 'choose': {
       const choice = plan.choose(input);
       if (!Object.hasOwn(plan.choices, choice)) throw new Error('Unregistered query choice');
-      return executePlan(plan.choices[choice], input, queries, execute, resources);
+      return executePlan(plan.choices[choice], input, queries, execute, resources, exactStringInputs);
     }
   }
 }

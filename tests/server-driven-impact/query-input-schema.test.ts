@@ -205,3 +205,125 @@ describe('Standard Schema inputs and verified string caching', () => {
     );
   });
 });
+
+describe('nested q.call and verified string caching', () => {
+  const profileResources: Resources = {
+    profiles: { schema: 'main', table: 'profiles', idColumn: 'id', scopeColumn: null, columns: ['id', 'username'] },
+  };
+  const usernameSchema: StandardSchemaV1<{ username: string }, { username: string }> = {
+    '~standard': {
+      version: 1,
+      vendor: 'test',
+      validate: value => {
+        const username = (value as { username?: unknown } | null)?.username;
+        return typeof username === 'string'
+          ? { value: { username } }
+          : { issues: [{ message: 'username must be a string' }] };
+      },
+    },
+  };
+  const loweringSchema: StandardSchemaV1<{ username: string }, { username: string }> = {
+    '~standard': {
+      version: 1,
+      vendor: 'test',
+      validate: value => {
+        const username = (value as { username?: unknown } | null)?.username;
+        return typeof username === 'string'
+          ? { value: { username: username.toLowerCase() } }
+          : { issues: [{ message: 'username must be a string' }] };
+      },
+    },
+  };
+  function nestedContract() {
+    return defineCacheContract({
+      id: 'profiles-nested-call',
+      version: 1,
+      queries: [
+        {
+          operationId: 'profileByUsername',
+          endpoint: 'profiles.byUsername',
+          kind: 'query' as const,
+          input: { username: { type: 'string' as const, required: true } },
+          key: { prefix: ['profiles', 'byUsername'], path: ['username'] },
+          fallback: ['profiles', 'byUsername'],
+        },
+        {
+          operationId: 'profileViaCall',
+          endpoint: 'profiles.viaCall',
+          kind: 'query' as const,
+          input: { username: { type: 'string' as const, required: true } },
+          key: { prefix: ['profiles', 'viaCall'], path: ['username'] },
+          fallback: ['profiles', 'viaCall'],
+        },
+      ],
+    });
+  }
+  async function nestedEngine(inner: StandardSchemaV1<{ username: string }, { username: string }>) {
+    const database = newDatabase();
+    database.exec('pragma foreign_keys=on; create table profiles(id text primary key, username text not null)');
+    database.exec("insert into profiles values('1','alice')");
+    const queries = defineQueries({
+      'profiles.byUsername': {
+        input: inner,
+        plan: q.select('profiles', { where: [q.eq('username', q.input('username'))] }),
+      },
+      // No input mapper, so compileManifest keeps the nested binding and the outer endpoint
+      // claims a narrow selector on `username`.
+      'profiles.viaCall': { input: usernameSchema, plan: q.call('profiles.byUsername') },
+    });
+    const engine = createImpact({
+      resources: profileResources,
+      queries,
+      adapter: sqliteAdapter({ database }),
+      cacheContracts: [nestedContract()],
+    });
+    await engine.validate();
+    return engine;
+  }
+
+  it('rejects a nested schema that transforms a verified string, exactly as the direct call does', async () => {
+    const engine = await nestedEngine(loweringSchema);
+    // Both routes reach the same transforming schema; neither may execute SQL on a value the
+    // caller's cache key and the impact selector do not carry.
+    await expect(engine.query('profiles.byUsername', { username: 'Alice' }, { scope: null })).rejects.toThrow(
+      'QUERY_INPUT_PRESERVATION_VIOLATION:username',
+    );
+    await expect(engine.query('profiles.viaCall', { username: 'Alice' }, { scope: null })).rejects.toThrow(
+      'QUERY_INPUT_PRESERVATION_VIOLATION:username',
+    );
+  });
+
+  it('keeps a non-transforming nested schema working and still emits the narrow selector', async () => {
+    const engine = await nestedEngine(usernameSchema);
+    expect(await engine.query('profiles.viaCall', { username: 'alice' }, { scope: null })).toEqual([
+      { id: '1', username: 'alice' },
+    ]);
+    const result = await engine.command({ scope: null }, db =>
+      db.execute('insert into profiles values(?,?)', ['2', 'alice']),
+    );
+    expect(result.impact.targets).toContainEqual({
+      endpoint: 'profiles.viaCall',
+      scope: 'global',
+      selector: { kind: 'inputs', values: [{ username: 'alice' }] },
+    });
+  });
+
+  it('rejects a nested parsed input that is not a plain object', async () => {
+    const database = newDatabase();
+    database.exec('pragma foreign_keys=on; create table profiles(id text primary key, username text not null)');
+    const arraySchema: StandardSchemaV1<{ username: string }, { username: string }> = {
+      '~standard': { version: 1, vendor: 'test', validate: () => ({ value: [] as never }) },
+    };
+    const queries = defineQueries({
+      'profiles.byUsername': {
+        input: arraySchema,
+        plan: q.select('profiles', { where: [q.eq('username', q.input('username'))] }),
+      },
+      'profiles.viaCall': { input: usernameSchema, plan: q.call('profiles.byUsername') },
+    });
+    const engine = createImpact({ resources: profileResources, queries, adapter: sqliteAdapter({ database }) });
+    await expect(engine.query('profiles.viaCall', { username: 'alice' }, { scope: null })).rejects.toThrow(
+      'INVALID_QUERY_INPUT',
+    );
+  });
+});

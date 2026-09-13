@@ -16,6 +16,12 @@ interface TodoRow {
   id: string;
   status: string;
 }
+/** Declared as an interface on purpose: an un-narrowed input must not require one either. */
+interface StatusFilter {
+  status: string;
+}
+/** `any` satisfies a forced-`never` assignment silently, so probe it structurally instead. */
+type IsAny<T> = 0 extends 1 & T ? true : false;
 const resources: Resources = {
   todos: { table: 'todos', idColumn: 'id', scopeColumn: 'account_id', columns: ['id', 'account_id', 'status'] },
 };
@@ -30,6 +36,9 @@ const statusSchema: StandardSchemaV1<{ status: string }, { status: string }> = {
   },
 };
 const legacyInput = { parse: (value: unknown) => value as { status: string } };
+/** The style the README teaches: `parse(value: unknown): Input`, which narrows nothing. */
+const untypedInput = { parse: (value: unknown) => value as Record<string, unknown> };
+const passthroughInput = { parse: (value: unknown) => value };
 const queries = defineQueries({
   'todos.byStatus': {
     input: statusSchema,
@@ -40,6 +49,8 @@ const queries = defineQueries({
   'todos.ids': { input: statusSchema, plan: q.map(q.select<Todo>('todos'), rows => rows.map(row => row.id)) },
   'todos.either': { input: statusSchema, plan: q.when(() => true, q.count('todos'), q.value('none')) },
   'todos.legacy': { input: legacyInput, plan: q.select('todos') },
+  'todos.untypedInput': { input: untypedInput, plan: q.select<Todo>('todos') },
+  'todos.passthroughInput': { input: passthroughInput, plan: q.select<Todo>('todos') },
   'todos.rows': { input: statusSchema, plan: q.select<TodoRow>('todos') },
   // A bare q.call must resolve to unknown, not to the contextual Plan's type argument.
   'todos.viaCall': { input: statusSchema, plan: q.call('todos.count') },
@@ -71,9 +82,10 @@ it('infers query input and output types from definitions', async () => {
   }>();
   expectTypeOf(engine.query('todos.ids', { status: 'open' }, context)).resolves.toEqualTypeOf<string[]>();
   expectTypeOf(engine.query('todos.either', { status: 'open' }, context)).resolves.toEqualTypeOf<number | string>();
-  expectTypeOf(engine.query('todos.legacy', { status: 'open' }, context)).resolves.toEqualTypeOf<
-    Record<string, unknown>[]
-  >();
+  // An untyped q.select resolves to unknown[], so a call-site cast to an interface row type compiles.
+  expectTypeOf(engine.query('todos.legacy', { status: 'open' }, context)).resolves.toEqualTypeOf<unknown[]>();
+  const castRows = (await engine.query('todos.legacy', { status: 'open' }, context)) as TodoRow[];
+  expectTypeOf(castRows).toEqualTypeOf<TodoRow[]>();
   expectTypeOf(engine.queryUncached('todos.ids', { status: 'open' }, context)).resolves.toEqualTypeOf<{
     data: string[];
     cachePolicy: 'no-store';
@@ -95,13 +107,21 @@ it('infers query input and output types from definitions', async () => {
   const loose = createImpact({ resources, queries: plain, adapter: sqliteAdapter({ database }) });
   expectTypeOf<Awaited<ReturnType<typeof loose.query>>>().toEqualTypeOf<unknown>();
   expectTypeOf<Awaited<ReturnType<typeof loose.query>>>().not.toBeAny();
-  expectTypeOf<Parameters<typeof loose.query>[1]>().toEqualTypeOf<unknown>();
-  expectTypeOf<Parameters<typeof loose.query>[1]>().not.toBeAny();
+  expectTypeOf<Parameters<typeof loose.query>[1]>().toEqualTypeOf<object>();
+  expectTypeOf<IsAny<Parameters<typeof loose.query>[1]>>().toEqualTypeOf<false>();
 
   // Input side: both definition styles narrow the `input` argument.
   expectTypeOf<Parameters<typeof engine.query<'todos.byStatus'>>[1]>().toEqualTypeOf<{ status: string }>();
   expectTypeOf<Parameters<typeof engine.query<'todos.legacy'>>[1]>().toEqualTypeOf<{ status: string }>();
   expectTypeOf<Parameters<typeof engine.query<'todos.legacy'>>[1]>().not.toBeAny();
+
+  // An un-narrowed input maps to `object`, which accepts an interface-typed value and is still not `any`.
+  const filter: StatusFilter = { status: 'open' };
+  await engine.query('todos.untypedInput', filter, context);
+  await engine.query('todos.passthroughInput', filter, context);
+  expectTypeOf<Parameters<typeof engine.query<'todos.untypedInput'>>[1]>().toEqualTypeOf<object>();
+  expectTypeOf<IsAny<Parameters<typeof engine.query<'todos.untypedInput'>>[1]>>().toEqualTypeOf<false>();
+  expectTypeOf<IsAny<Parameters<typeof engine.query<'todos.passthroughInput'>>[1]>>().toEqualTypeOf<false>();
 
   // The { parse } style narrows its input at compile time even though its parser accepts anything at runtime.
   // @ts-expect-error status must be a string
