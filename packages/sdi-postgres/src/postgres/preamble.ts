@@ -48,7 +48,14 @@ export function commandPreambleSql(options: { isolationLevel: IsolationLevel; to
   if (!TOKEN.test(options.token)) throw new Error('INVALID_REQUEST_TOKEN');
   const tag = `$sdi_${options.token.replaceAll('-', '')}$`;
   const scope = String(options.scope);
-  if (scope.includes(tag) || scope.includes('\0')) throw new Error('INVALID_SCOPE_LITERAL');
+  // A scope ending in the tag minus its trailing `$` also terminates the quoted string, by borrowing
+  // that `$` from the closing tag, so reject the prefix rather than the full tag.
+  //
+  // This guard is sound only because the token is server-generated and unpredictable: it comes from a
+  // fresh randomUUID() per command, so a caller cannot aim a scope at the tag. If the token ever
+  // becomes caller-supplied, reused across commands, or otherwise predictable, this check stops being
+  // a guard and the scope must be escaped instead of dollar-quoted.
+  if (scope.includes(tag.slice(0, -1)) || scope.includes('\0')) throw new Error('INVALID_SCOPE_LITERAL');
   return [
     quietCommitSql,
     sessionLockSql,

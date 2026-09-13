@@ -54,6 +54,11 @@ describe('PostgreSQL preamble SQL', () => {
     expect(() => commandPreambleSql({ isolationLevel: 'read committed', token, scope: `a${tag}b` })).toThrow(
       'INVALID_SCOPE_LITERAL',
     );
+    // A scope ending in the tag minus its trailing `$` borrows that `$` from the closing tag and
+    // terminates the quoted string just as well, so it must be rejected too.
+    expect(() =>
+      commandPreambleSql({ isolationLevel: 'read committed', token, scope: `a${tag.slice(0, -1)}` }),
+    ).toThrow('INVALID_SCOPE_LITERAL');
     expect(() => commandPreambleSql({ isolationLevel: 'read committed', token, scope: 'a\0b' })).toThrow(
       'INVALID_SCOPE_LITERAL',
     );
