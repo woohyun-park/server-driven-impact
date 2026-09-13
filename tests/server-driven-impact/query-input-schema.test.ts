@@ -238,6 +238,8 @@ describe('nested q.call and verified string caching', () => {
     'profiles.byUsername': 'profileByUsername',
     'profiles.viaCall': 'profileViaCall',
     'profiles.viaMappedCall': 'profileViaMappedCall',
+    'profiles.viaBind': 'profileViaBind',
+    'profiles.viaMappedAncestor': 'profileViaMappedAncestor',
   } as const;
   type ContractEndpoint = keyof typeof operationIds;
   function nestedContract(endpoints: readonly ContractEndpoint[]) {
@@ -283,6 +285,18 @@ describe('nested q.call and verified string caching', () => {
           mapped: q.call('profiles.byUsername', value => ({ username: String(value.username) })),
         }),
       },
+      // `readsFor`'s bind case widens the child's bindings unconditionally, so the calculator emits a
+      // value-independent selector here. The child call is an identity call on purpose: the callee's own
+      // contract declarations must not reintroduce a check on a path an ancestor already widened.
+      'profiles.viaBind': {
+        input: usernameSchema,
+        plan: q.bind(q.value({ seed: true }), q.call('profiles.byUsername'), () => ({ username: 'Alice' })),
+      },
+      // Same widened path, reached through a mapper'd ancestor call instead of a bind.
+      'profiles.viaMappedAncestor': {
+        input: usernameSchema,
+        plan: q.call('profiles.viaCall', value => ({ username: String(value.username) })),
+      },
     });
     const engine = createImpact({
       resources: profileResources,
@@ -324,6 +338,25 @@ describe('nested q.call and verified string caching', () => {
       direct: [],
       mapped: [{ id: '1', username: 'alice' }],
     });
+  });
+
+  it('allows a transforming callee under q.bind even when a contract names that callee', async () => {
+    // The reproduced regression: `q.bind` widens its child's bindings unconditionally, so nothing below
+    // can desynchronize a selector, yet the callee's own declaration used to resurrect the check. The
+    // contract here never touches the outer endpoint, which is in no contract at all.
+    const engine = await nestedEngine(loweringSchema, ['profiles.byUsername']);
+    expect(await engine.query('profiles.viaBind', { username: 'Alice' }, { scope: null })).toEqual([
+      { id: '1', username: 'alice' },
+    ]);
+  });
+
+  it("allows a transforming callee below a mapper'd ancestor call that a contract names", async () => {
+    // Same widened path as the bind, one level deeper: the mapper is on the ancestor call, and the
+    // identity call beneath it must not reintroduce the check from its own declaration.
+    const engine = await nestedEngine(loweringSchema, ['profiles.byUsername']);
+    expect(await engine.query('profiles.viaMappedAncestor', { username: 'Alice' }, { scope: null })).toEqual([
+      { id: '1', username: 'alice' },
+    ]);
   });
 
   it('keeps a non-transforming nested schema working and still emits the narrow selector', async () => {

@@ -423,11 +423,18 @@ export async function executePlan(
   resources: Resources,
   exactStringInputs: (endpoint: string) => readonly string[],
   /**
-   * Exact-string fields carried from the endpoint the caller actually requested. The cache key is
-   * built from the contract on THAT endpoint, so every hop that still receives the caller's own input
-   * must preserve these, whether or not a contract happens to name the hop as well.
+   * Exact-string fields carried from the endpoint the caller actually requested, or `null` once an
+   * ancestor has widened the path. The cache key is built from the contract on the requested endpoint,
+   * so every hop that still receives the caller's own input must preserve these fields, whether or not
+   * a contract happens to name the hop as well.
+   *
+   * `null` and `[]` are deliberately different: `null` means an ancestor already widened this endpoint's
+   * bindings, so nothing below it can desynchronize a selector and no hop may reintroduce a check from
+   * its own declarations; `[]` means the path is still the caller's but nothing has been declared on it
+   * yet, so a callee's own declarations still apply. Collapsing the two is what let a widened path be
+   * re-checked by a contract that named only the callee.
    */
-  requiredStringInputs: readonly string[],
+  requiredStringInputs: readonly string[] | null,
 ): Promise<unknown> {
   switch (plan.kind) {
     case 'select': {
@@ -445,9 +452,10 @@ export async function executePlan(
       const parsed = await query.input.parse(raw);
       if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('INVALID_QUERY_INPUT');
       // An input mapper ends the identity chain: `readsFor` drops this endpoint's bindings, so impact
-      // has already widened and nothing below has to reproduce the caller's exact string.
-      let carried: readonly string[] = [];
-      if (!plan.input) {
+      // has already widened and nothing below has to reproduce the caller's exact string. A path an
+      // ancestor already widened stays widened, whatever this callee's own contracts declare.
+      let carried: readonly string[] | null = null;
+      if (!plan.input && requiredStringInputs) {
         // The nested schema re-parses a value the caller's cache key already committed to, so it needs
         // the same preservation check the top level applies. Both lists matter: a field declared only on
         // the requested endpoint and one declared only on this callee each need preserving.
@@ -493,8 +501,9 @@ export async function executePlan(
         requiredStringInputs,
       );
       const next = plan.input(data, input);
-      // The child's input is derived, not the caller's, and `readsFor` already dropped its bindings.
-      return next === null ? [] : executePlan(plan.child, next, queries, execute, resources, exactStringInputs, []);
+      // The child's input is derived, not the caller's, and `readsFor` already dropped its bindings, so
+      // the calculator emits a value-independent selector for it and there is no key left to mismatch.
+      return next === null ? [] : executePlan(plan.child, next, queries, execute, resources, exactStringInputs, null);
     }
     case 'map':
       return plan.project(
