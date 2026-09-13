@@ -13,7 +13,7 @@ Native SQL은 비교 대상 Drizzle update builder의 `toSQL()` 결과와 parame
 - serial sample마다 첫 mode를 바꿔 고정 실행 순서의 영향을 줄인다.
 - 단건 동시성: 같은 행을 동시에 변경하는 4개 command. serialization failure는 최대 20회 재시도한다.
 - 같은 연결의 acquire→release 시간을 연결 점유 시간으로 기록한다. 전체 시간에는 연결 대기, ORM 초기화, ImpactSet 계산도 포함된다.
-- SQL calls는 `pg.Client.query()` 호출 횟수다. 관찰 mode는 이제 단일 왕복으로 합쳐진 command preamble(세션 잠금, collector 테이블, BEGIN, 요청 설정)과 BEGIN/COMMIT, observer 회수 SQL을 포함하며, 네트워크 패킷을 측정한 값은 아니다.
+- SQL calls는 `pg.Client.query()` 호출 횟수다. 관찰 mode는 단일 왕복으로 합쳐진 command preamble(세션 잠금, collector 테이블, `BEGIN`, 요청 설정)과 그 뒤의 `COMMIT`, observer 회수 SQL을 포함하며, 네트워크 패킷을 측정한 값은 아니다.
 - impact/response bytes의 JSON 직렬화와 DB 결과 검증용 SELECT는 측정 시간 밖에서 수행한다. 시간 안의 업무 SELECT는 0건인지 검사한다.
 - 관찰 artifact 생성과 `engine.validate()`는 측정 전에 수행한다. 비용을 요청마다 발생하는 것으로 섞지 않는다.
 - 동시성 결과의 `requestP50Ms` / `requestP95Ms`와 처리량에는 실패한 시도·재시도가 포함된다. 일반 `p50Ms` / `p95Ms`, 연결 점유 및 SQL calls는 성공한 시도만의 값이다.
@@ -77,7 +77,9 @@ Prisma를 제외할 때만 `SDI_BENCHMARK_PRISMA=0`을 설정한다. 기본 실�
 
 **ms 값은 2026-09-10 문서와 나란히 비교하지 않는다.** 이번 실행은 Node `v24.15.0`(이전 `v25.8.0`), 임시 포트 컨테이너 대신 다른 태스크의 통합 테스트가 쓰던 `sdi-pg` 고정 포트 컨테이너(`127.0.0.1:55432`), serial 10회(이전 15회)로 조건이 다르다. 이 문서 안에서도 관찰 mode의 p50은 대조군보다 항상 컸다(예: 1행 native 1.057→2.611 ms, 10,000행 native 13.567→17.030 ms). 이는 preamble이 한 번으로 줄었어도 여전히 0이 아닌 고정 비용이 남아 있다는 뜻이지, 이전 실행 대비 지연이 개선되었다거나 악화되었다는 근거는 아니다. 서로 다른 실행·환경의 지연 수치를 이 구현 변경 하나의 효과로 돌리지 않는다.
 
-**표본 10개의 nearest-rank p95는 사실상 최댓값이다.** `ceil(0.95 × 10) = 10`이므로 이번 문서의 모든 p95는 표본 10개 중 가장 큰 값이며, 꼬리 지연 분포를 추정한 값이 아니다. 예를 들어 10,000행 drizzle-observed는 p50 16.942 / p95 17.663으로 근접하지만, 1,000행 drizzle-observed는 p50 3.417 / p95 4.503으로 상대적으로 크게 벌어진다. 표본이 10개뿐인 단일 실행에서 mode 간 순위나 꼬리 지연 우열을 정하지 않는다.
+**Serial 표 10개 표본의 nearest-rank p95는 사실상 최댓값이다.** `percentile = sorted[ceil(n × fraction) - 1]`이고 Serial 지연 표(1/1,000/10,000행)는 `n = 10`이므로 `ceil(0.95 × 10) - 1 = 9`(0-index), 즉 정렬한 10개 중 10번째 값 — 표본 최댓값을 그대로 p95로 쓴다. 꼬리 지연 분포를 추정한 값이 아니다. 예를 들어 10,000행 drizzle-observed는 p50 16.942 / p95 17.663으로 근접하지만, 1,000행 drizzle-observed는 p50 3.417 / p95 4.503으로 상대적으로 크게 벌어진다. 표본이 10개뿐인 단일 실행에서 mode 간 순위나 꼬리 지연 우열을 정하지 않는다.
+
+**동시성 표의 p95는 성공 요청 40개에 대한 실제 nearest-rank 95번째 백분위수다.** 동시성 표는 `n = 40`(모드별 성공 요청 40개)이므로 `ceil(0.95 × 40) - 1 = 37`(0-index), 즉 정렬한 40개 중 38번째 값을 쓴다. 이는 40번째(최댓값)와 다른 값이므로 Serial 표의 "사실상 최댓값" caveat은 동시성 표에는 적용되지 않는다. 다만 40개도 여전히 작은 표본이므로, 이 값을 안정적인 tail-latency 추정치로 확대 해석하지는 않는다.
 
 **Impact bytes는 2026-09-10 문서와 동일하다.** 1행 관찰 mode는 `inputs` 121 bytes, 1,000/10,000행은 `all` 98 bytes로 이전 문서와 일치한다. `{ data, impact }` 응답 형태와 ImpactSet 계산 로직은 이번 preamble/타입 추론 변경으로 바뀌지 않았음을 이 값이 뒷받침한다. 응답 최대 크기도 141 / 121 / 122 bytes로 동일하다.
 
