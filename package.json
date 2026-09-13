@@ -6,6 +6,9 @@
   "packageManager": "pnpm@10.33.0",
   "scripts": {
     "changeset": "changeset",
+    "lint": "biome check .",
+    "lint:fix": "biome check --write .",
+    "format": "biome format --write .",
     "build": "pnpm --filter './packages/sdi-*' -r build",
     "typecheck": "pnpm build && pnpm --filter './packages/sdi-*' -r typecheck && tsc -p tsconfig.json",
     "test": "pnpm build && vitest run --config sdi.vitest.config.ts",
@@ -30,14 +33,15 @@
     "@server-driven-impact/runtime": "workspace:^"
   },
   "devDependencies": {
-    "@orpc/tanstack-query": "1.15.0",
+    "@biomejs/biome": "2.5.13",
     "@changesets/cli": "3.0.2",
+    "@orpc/tanstack-query": "1.15.0",
     "@prisma/adapter-pg": "7.10.0",
     "@prisma/client": "7.10.0",
     "@prisma/client-runtime-utils": "7.10.0",
     "@prisma/driver-adapter-utils": "7.10.0",
-    "@server-driven-impact/sqlite": "workspace:^",
     "@server-driven-impact/cache-contract": "workspace:^",
+    "@server-driven-impact/sqlite": "workspace:^",
     "@server-driven-impact/tanstack-query": "workspace:^",
     "@tanstack/query-core": "5.102.8",
     "@types/node": "25.9.1",
