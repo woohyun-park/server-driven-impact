@@ -36,24 +36,22 @@ export function isStandardSchema(value: unknown): value is StandardSchemaV1 {
 }
 
 /** Normalize either input style into one parse function. Throws at definition time for unsupported shapes. */
-export function toParse(schema: InputSchema<any, any>): (value: unknown) => unknown | Promise<unknown> {
+export function toParse(schema: InputSchema<any, any>): (value: unknown) => Promise<unknown> {
   if (isStandardSchema(schema)) {
     const standard = schema['~standard'];
     if (standard.version !== 1) throw new Error('UNSUPPORTED_INPUT_SCHEMA_VERSION');
     const settle = (result: StandardResult<unknown>): unknown => {
       if (result.issues) {
-        throw new Error(`INVALID_QUERY_INPUT:${result.issues.map(issue => issue.message).join('; ')}`, {
-          cause: result.issues,
-        });
+        const detail = result.issues.map(issue => issue.message).join('; ') || 'no issue details provided';
+        throw new Error(`INVALID_QUERY_INPUT:${detail}`, { cause: result.issues });
       }
+      if (!result.value || typeof result.value !== 'object') throw new Error('INVALID_QUERY_INPUT');
       return result.value;
     };
-    return value => {
-      const result = standard.validate(value);
-      return result instanceof Promise ? result.then(settle) : settle(result);
-    };
+    return async value => settle(await standard.validate(value));
   }
   if (!schema || typeof (schema as InputParser<unknown>).parse !== 'function')
     throw new Error('INVALID_QUERY_DEFINITION');
-  return (schema as InputParser<unknown>).parse.bind(schema);
+  const parse = (schema as InputParser<unknown>).parse.bind(schema);
+  return async value => parse(value);
 }
