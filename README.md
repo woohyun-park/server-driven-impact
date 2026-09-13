@@ -223,11 +223,14 @@ See the [cache-contract migration guide](./docs/migrations/cache-contract-0.5.md
 
 ```bash
 pnpm install
+git config blame.ignoreRevsFile .git-blame-ignore-revs
 pnpm lint
 pnpm typecheck
 pnpm test
 pnpm pack:check
 ```
+
+GitHub honors `.git-blame-ignore-revs` on its own; the `git config` line makes local `git blame` skip the same formatting-only commits.
 
 Releases use Changesets and npm trusted publishing from `.github/workflows/sdi-release.yml`.
 

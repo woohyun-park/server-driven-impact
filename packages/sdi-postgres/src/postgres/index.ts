@@ -32,6 +32,7 @@ import { commandPreambleSql, ISOLATION_LEVELS, readPreambleSql, type IsolationLe
 import type { PostgresSetupTransaction } from './public-types.js';
 
 export { sql, Sql, identifier, join } from './sql.js';
+export type { IsolationLevel } from './preamble.js';
 export { generateObserverMigration, observerFingerprint } from './observer.js';
 export { compilePostgresQuery, type PostgresMajor, type PostgresQuerySource } from './query-compiler.js';
 export { createPostgresCatalogResolver };

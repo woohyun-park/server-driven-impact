@@ -6,6 +6,7 @@ import type { ImpactAdapter } from '@server-driven-impact/runtime/adapter';
 import { postgresAdapter } from '../postgres/index.js';
 import { executeDriver, type DriverQueryOptions } from '../postgres/driver-execution.js';
 import type { Sql } from '../postgres/sql.js';
+import type { IsolationLevel } from '../postgres/preamble.js';
 import type { PostgresSetupTransaction } from '../postgres/public-types.js';
 
 const require = createRequire(import.meta.url);
@@ -28,7 +29,7 @@ export interface PgCommandDb {
 export interface PgOptions {
   database: Pool;
   setup?: (tx: PgTransaction, scope: Scalar) => Promise<void>;
-  isolationLevel?: 'read uncommitted' | 'read committed' | 'repeatable read' | 'serializable';
+  isolationLevel?: IsolationLevel;
   connectionMode?: 'direct' | 'session' | 'transaction';
 }
 

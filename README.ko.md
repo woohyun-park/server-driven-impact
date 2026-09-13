@@ -221,11 +221,14 @@ SDI는 지원되는 작업이 SDI engine과 adapter가 소유한 transaction을 
 
 ```bash
 pnpm install
+git config blame.ignoreRevsFile .git-blame-ignore-revs
 pnpm lint
 pnpm typecheck
 pnpm test
 pnpm pack:check
 ```
+
+GitHub은 `.git-blame-ignore-revs`를 자동으로 적용합니다. 위 `git config` 한 줄은 로컬 `git blame`에서도 같은 포맷 전용 커밋을 건너뛰게 합니다.
 
 릴리스에는 Changesets와 `.github/workflows/sdi-release.yml`의 npm trusted publishing을 사용합니다.
 
