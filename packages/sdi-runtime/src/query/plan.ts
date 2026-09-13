@@ -36,8 +36,16 @@ export function validateManifest(manifest: QueryManifest, resources: Resources):
   if (byteLength(manifest) > LIMITS.manifestBytes) throw new Error('MANIFEST_LIMIT');
 }
 
-/** Phantom result type carried by builders; the key never exists at runtime. */
+/**
+ * Phantom result type carried by builders; the key never exists at runtime, so plan objects stay
+ * byte-identical and manifest/observer/artifact fingerprints are unaffected.
+ *
+ * The key must stay the string `'~output'`. A `unique symbol` would need to be declared and, because
+ * these packages build with `declaration: true`, a non-exported symbol cannot be named in the emitted
+ * `.d.ts` — swapping the string for a symbol breaks declaration emit for all six packages.
+ */
 export type Typed<O> = { readonly '~output'?: O };
+/** The result type a plan produces when executed; `unknown` for anything that carries no phantom. */
 export type OutputOf<P> = P extends Typed<infer O> ? O : unknown;
 
 export type Value = { kind: 'input'; field: string } | { kind: 'literal'; value: unknown };
@@ -97,8 +105,8 @@ export type Plan<O = unknown> =
   | ({ kind: 'map'; source: Plan; project: (data: unknown, input: Input) => unknown } & Typed<O>)
   | ({ kind: 'choose'; choices: Record<string, Plan>; choose: (input: Input) => string } & Typed<O>);
 export type QueryDefinition<
-  S extends InputSchema<any, any> = InputSchema<any, any>,
-  P extends Plan<any> = Plan<any>,
+  S extends InputSchema<unknown, unknown> = InputSchema<unknown, unknown>,
+  P extends Plan<unknown> = Plan<unknown>,
 > = { input: S; plan: P };
 export type Manifest = QueryManifest & { sources: Record<string, string[]>; dependents: Record<string, string[]> };
 
@@ -126,7 +134,7 @@ export function requiresNoStore(plan: Plan, queries: Record<string, QueryDefinit
 }
 
 export const q = {
-  select<Row extends Record<string, unknown> = Record<string, unknown>>(
+  select<Row extends object = Record<string, unknown>>(
     resource: ResourceId,
     options: SelectOptions = {},
   ): SelectPlan<Row[]> {
@@ -159,7 +167,9 @@ export const q = {
   value<T>(value: T): Plan<T> {
     return { kind: 'value', value };
   },
-  call<O = unknown>(endpoint: string, input?: (input: Input) => Input): Plan<O> {
+  // NoInfer keeps the contextual `Plan<unknown>`/`Plan<any>` of the surrounding definition from
+  // instantiating O. Without it a bare q.call() widens to the context instead of honoring its default.
+  call<O = unknown>(endpoint: string, input?: (input: Input) => Input): Plan<NoInfer<O>> {
     return { kind: 'call', endpoint, ...(input ? { input } : {}) };
   },
   combine<C extends Record<string, Plan<any>>>(children: C): Plan<{ [K in keyof C]: OutputOf<C[K]> }> {
