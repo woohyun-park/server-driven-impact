@@ -27,8 +27,8 @@ import {
 import { randomUUID } from 'node:crypto';
 import { CommitStateUnknownError, ImpactUnavailableError } from '@server-driven-impact/runtime/adapter';
 import { createPostgresCatalogResolver } from './catalog-resolver.js';
-import { lockSession, releaseSession } from './session.js';
-import { commandPreambleSql, ISOLATION_LEVELS, type IsolationLevel } from './preamble.js';
+import { releaseSession } from './session.js';
+import { commandPreambleSql, ISOLATION_LEVELS, readPreambleSql, type IsolationLevel } from './preamble.js';
 import type { PostgresSetupTransaction } from './public-types.js';
 
 export { sql, Sql, identifier, join } from './sql.js';
@@ -110,7 +110,7 @@ export interface PostgresOptions<T extends Record<string, unknown> = Record<stri
   /** Verified claims, RLS role and transaction settings. No business writes here. */
   setup?: (tx: PostgresSetupTransaction, scope: Scalar) => Promise<void>;
   /** Defaults to repeatable read for backward compatibility. */
-  isolationLevel?: 'read uncommitted' | 'read committed' | 'repeatable read' | 'serializable';
+  isolationLevel?: IsolationLevel;
   /** The collector survives COMMIT on the same backend. Transaction pools cannot honor that contract. */
   connectionMode?: 'direct' | 'session' | 'transaction';
 }
@@ -135,7 +135,7 @@ export function postgresAdapter<T extends Record<string, unknown>>(
   if (!options?.database || typeof options.database.begin !== 'function')
     throw new Error('POSTGRES_CONNECTION_REQUIRED');
   if ('writeAccess' in options || 'routines' in options) throw new Error('POSTGRES_LEGACY_COMMAND_OPTIONS_REMOVED');
-  const isolationLevel = (options.isolationLevel ?? 'repeatable read') as IsolationLevel;
+  const isolationLevel = options.isolationLevel ?? 'repeatable read';
   if (options.connectionMode === 'transaction') throw new Error('POSTGRES_SESSION_CONNECTION_REQUIRED');
   if (!ISOLATION_LEVELS.includes(isolationLevel)) throw new Error('INVALID_ISOLATION_LEVEL');
   return Object.freeze({
@@ -237,8 +237,7 @@ export function postgresAdapter<T extends Record<string, unknown>>(
         const session = await reserve();
         let broken = false;
         try {
-          await lockSession(session);
-          await session.unsafe(`begin isolation level ${isolationLevel} read only`);
+          await session.unsafe(readPreambleSql(isolationLevel));
           const data = await work(session);
           await session.unsafe('commit');
           return data;
@@ -272,12 +271,16 @@ export function postgresAdapter<T extends Record<string, unknown>>(
               if (role.role !== manifest.postgres.catalog.effectiveRole)
                 throw new Error('POSTGRES_ARTIFACT_ROLE_MISMATCH');
             }
+            let currentSearchPath: string | undefined;
             const data = await work(async (plan, input) => {
               if (plan.kind === 'postgres-query') {
-                if (plan.searchPath)
-                  await tx.unsafe("select set_config('search_path',$1,true)", [
-                    plan.searchPath.map(schema => '"' + schema.replaceAll('"', '""') + '"').join(','),
-                  ]);
+                if (plan.searchPath) {
+                  const searchPath = plan.searchPath.map(schema => `"${schema.replaceAll('"', '""')}"`).join(',');
+                  if (searchPath !== currentSearchPath) {
+                    await tx.unsafe("select set_config('search_path',$1,true)", [searchPath]);
+                    currentSearchPath = searchPath;
+                  }
+                }
                 return [...(await tx.unsafe(plan.text, plan.parameters.map(field => input[field]) as never[]))];
               }
               const statement = compileSelect(plan, input, resources);
