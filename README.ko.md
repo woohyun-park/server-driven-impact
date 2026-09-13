@@ -167,6 +167,8 @@ Resource는 애플리케이션의 이름을 DB relation에 연결합니다. `idC
 
 `engine.query()`는 등록된 캐시 가능 plan만 실행합니다. `no-store` 정책으로 컴파일한 plan은 `engine.queryUncached()`로 실행합니다.
 
+`input`에는 `parse(value)`를 가진 객체나 zod, valibot 같은 [Standard Schema](https://standardschema.dev) v1 스키마를 그대로 넣을 수 있습니다. `engine.query()`는 입력 타입을 그 스키마에서, 반환 타입을 plan에서 추론합니다. `q.select<Row>()`는 `Row[]`, `q.count()`는 `number`를 돌려주고 `q.map`, `q.combine`, `q.when`, `q.choose`는 콜백과 자식 plan의 타입을 따릅니다.
+
 ### Commands와 WriteFacts
 
 `engine.command()`는 쓰기 추적 경계입니다. adapter는 콜백을 자신의 transaction 안에서 실행하고 insert, update, delete, trigger, 지원되는 cascade에서 `WriteFact`를 기록합니다. rollback은 성공한 impact를 만들지 않으며 rollback된 savepoint의 쓰기는 버립니다.
@@ -197,6 +199,8 @@ PostgreSQL 애플리케이션은 보통 다음 두 실행 경로를 둡니다.
 3. 일반 요청에서는 전체 catalog 검증을 반복하지 않고 engine을 통해 Query와 Command를 실행합니다.
 
 runtime role에는 일반적인 테이블 권한이 필요합니다. adapter의 `setup`이 설정하는 scope와 RLS 정책도 일치해야 합니다. postgres.js는 `postgresAdapter`를 사용합니다. node-postgres는 `@server-driven-impact/postgres/pg`의 `pgAdapter`를 사용하며, 이 드라이버에서 COPY를 사용할 때는 `pg-copy-streams`도 필요합니다.
+
+Command는 업무 SQL 앞에 준비 왕복 한 번(세션 잠금, collector 테이블, `BEGIN`, 요청 설정)을 보내고, 뒤에 `COMMIT`, 관찰 결과 회수, 잠금 해제를 보냅니다. 조회는 준비 왕복 한 번과 트랜잭션당 한 번의 `search_path` 설정을 사용합니다. 이 준비 단계는 자신의 암시적 블록 안에서만 `client_min_messages`를 잠시 `error`로 설정하며, `BEGIN` 이전에 원래 값으로 되돌립니다.
 
 자세한 내용은 [PostgreSQL 패키지 가이드](./packages/sdi-postgres/README.ko.md), [호환 계약](./spec/server-driven-impact/postgres-compatibility.md), [orders 예제](./examples/orders-impact)를 참고하세요.
 

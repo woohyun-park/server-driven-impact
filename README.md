@@ -167,6 +167,8 @@ A Resource maps an application name to a database relation. `idColumn` identifie
 
 `engine.query()` accepts only registered, cacheable plans. Use `engine.queryUncached()` for a plan compiled with a `no-store` policy.
 
+`input` accepts any object with `parse(value)` or any [Standard Schema](https://standardschema.dev) v1 schema such as zod or valibot. `engine.query()` infers its input type from that schema and its return type from the plan: `q.select<Row>()` returns `Row[]`, `q.count()` returns `number`, and `q.map`, `q.combine`, `q.when`, `q.choose` follow their callbacks and children.
+
 ### Commands and WriteFacts
 
 `engine.command()` is the tracked write boundary. The adapter executes the callback inside its transaction and records `WriteFact` values for inserts, updates, deletes, triggers, and supported cascades. Rollback produces no successful impact result; rolled-back savepoint writes are discarded.
@@ -197,6 +199,8 @@ A PostgreSQL application normally has two lifecycle paths:
 3. serve normal Query and Command traffic through the engine without repeating full catalog validation per request.
 
 The runtime role needs its normal table privileges and should use RLS aligned with the scope set by the adapter's `setup` callback. postgres.js uses `postgresAdapter`. node-postgres uses `pgAdapter` from `@server-driven-impact/postgres/pg`; COPY with that driver also requires `pg-copy-streams`.
+
+Each Command sends one preamble round trip (session lock, collector table, `BEGIN`, request settings) before the business SQL, then `COMMIT`, the observer drain, and the unlock. Reads use one preamble and set `search_path` once per transaction. The preamble temporarily sets `client_min_messages` to `error` for its own implicit block only; the setting reverts before `BEGIN`.
 
 See the [PostgreSQL package guide](./packages/sdi-postgres), [compatibility contract](./spec/server-driven-impact/postgres-compatibility.md), and [orders example](./examples/orders-impact).
 
