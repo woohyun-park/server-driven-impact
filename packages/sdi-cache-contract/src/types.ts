@@ -56,8 +56,14 @@ export interface CacheContract {
   queries: readonly CacheQueryContract[];
   excludedEndpoints?: readonly { endpoint: string; reason: 'no-store' | 'not-consumed' }[];
 }
-export interface CacheContractReference { id: string; version: number }
-export interface CacheInvalidation { queryKey: QueryKey; exact: boolean }
+export interface CacheContractReference {
+  id: string;
+  version: number;
+}
+export interface CacheInvalidation {
+  queryKey: QueryKey;
+  exact: boolean;
+}
 export interface CacheInvalidationSet {
   protocolVersion: 1;
   contractId: string;
@@ -66,8 +72,15 @@ export interface CacheInvalidationSet {
   invalidations: readonly CacheInvalidation[];
 }
 export type CacheDiagnosticReason =
-  | 'all' | 'endpoint-policy' | 'precise' | 'missing-field' | 'comparison-unproven'
-  | 'input-unrepresentable' | 'page-input' | 'budget' | 'excluded';
+  | 'all'
+  | 'endpoint-policy'
+  | 'precise'
+  | 'missing-field'
+  | 'comparison-unproven'
+  | 'input-unrepresentable'
+  | 'page-input'
+  | 'budget'
+  | 'excluded';
 export interface CacheDiagnostic {
   endpoint: string;
   operationId?: string;
@@ -82,5 +95,8 @@ export interface CacheCompileOptions {
   maxInvalidations?: number;
   maxBytes?: number;
 }
-export interface CacheEndpoint { endpoint: string; cache: 'cacheable' | 'no-store' }
+export interface CacheEndpoint {
+  endpoint: string;
+  cache: 'cacheable' | 'no-store';
+}
 export type StringComparisonStatus = 'verified' | 'comparison-unproven';

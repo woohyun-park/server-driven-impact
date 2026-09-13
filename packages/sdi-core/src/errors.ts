@@ -11,7 +11,10 @@ export class ImpactUnavailableError<T = unknown> extends Error {
   readonly impactStatus = 'unavailable' as const;
   readonly phase: 'impact-calculation' | 'cache-invalidation';
   readonly impact?: ImpactSet;
-  constructor(readonly data: T, options?: ImpactUnavailableOptions) {
+  constructor(
+    readonly data: T,
+    options?: ImpactUnavailableOptions,
+  ) {
     super('IMPACT_UNAVAILABLE', options);
     this.name = 'ImpactUnavailableError';
     this.phase = options?.phase ?? 'impact-calculation';

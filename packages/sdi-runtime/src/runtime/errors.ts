@@ -12,8 +12,6 @@ export class CommitStateUnknownError extends Error {
   }
 }
 
-export function isCommitOutcomeError(value: unknown): value is
-  | ImpactUnavailableError
-  | CommitStateUnknownError {
+export function isCommitOutcomeError(value: unknown): value is ImpactUnavailableError | CommitStateUnknownError {
   return value instanceof ImpactUnavailableError || value instanceof CommitStateUnknownError;
 }

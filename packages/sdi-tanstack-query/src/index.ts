@@ -1,5 +1,10 @@
 import { byteLength, canonical, isScalar, type Scalar } from '@server-driven-impact/core';
-import { CACHE_LIMITS, isCacheValue, type CacheContractReference, type CacheInvalidationSet } from '@server-driven-impact/cache-contract';
+import {
+  CACHE_LIMITS,
+  isCacheValue,
+  type CacheContractReference,
+  type CacheInvalidationSet,
+} from '@server-driven-impact/cache-contract';
 import { matchQuery, type QueryClient } from '@tanstack/query-core';
 
 export type RefetchType = 'active' | 'inactive' | 'all' | 'none';
@@ -18,8 +23,11 @@ export interface ApplyCacheInvalidationsOptions {
 }
 
 function exactMatch(candidate: unknown, filter: unknown): boolean {
-  try { return canonical(candidate) === canonical(filter); }
-  catch { return false; }
+  try {
+    return canonical(candidate) === canonical(filter);
+  } catch {
+    return false;
+  }
 }
 
 export function validateCacheInvalidationSet(
@@ -31,9 +39,17 @@ export function validateCacheInvalidationSet(
   validatePayload(candidate, expected);
 }
 
-function validatePayload(payload: CacheInvalidationSet, expected: Pick<ApplyCacheInvalidationsOptions, 'contract' | 'scope'>): void {
+function validatePayload(
+  payload: CacheInvalidationSet,
+  expected: Pick<ApplyCacheInvalidationsOptions, 'contract' | 'scope'>,
+): void {
   if (!payload || payload.protocolVersion !== 1) throw new Error('UNSUPPORTED_CACHE_INVALIDATION_PROTOCOL');
-  if (typeof payload.contractId !== 'string' || !payload.contractId.length || !Number.isSafeInteger(payload.contractVersion) || payload.contractVersion < 1) {
+  if (
+    typeof payload.contractId !== 'string' ||
+    !payload.contractId.length ||
+    !Number.isSafeInteger(payload.contractVersion) ||
+    payload.contractVersion < 1
+  ) {
     throw new Error('INVALID_CACHE_CONTRACT_REFERENCE');
   }
   if (!isScalar(payload.scope) || !isScalar(expected.scope)) throw new Error('INVALID_CACHE_SCOPE');
@@ -41,9 +57,16 @@ function validatePayload(payload: CacheInvalidationSet, expected: Pick<ApplyCach
     throw new Error('CACHE_CONTRACT_MISMATCH');
   }
   if (!exactMatch(payload.scope, expected.scope)) throw new Error('CACHE_SCOPE_MISMATCH');
-  if (!Array.isArray(payload.invalidations) || payload.invalidations.length > CACHE_LIMITS.invalidations) throw new Error('INVALID_CACHE_INVALIDATIONS');
+  if (!Array.isArray(payload.invalidations) || payload.invalidations.length > CACHE_LIMITS.invalidations)
+    throw new Error('INVALID_CACHE_INVALIDATIONS');
   for (const invalidation of payload.invalidations) {
-    if (!invalidation || !Array.isArray(invalidation.queryKey) || !invalidation.queryKey.length || !isCacheValue(invalidation.queryKey) || typeof invalidation.exact !== 'boolean') {
+    if (
+      !invalidation ||
+      !Array.isArray(invalidation.queryKey) ||
+      !invalidation.queryKey.length ||
+      !isCacheValue(invalidation.queryKey) ||
+      typeof invalidation.exact !== 'boolean'
+    ) {
       throw new Error('INVALID_CACHE_INVALIDATION');
     }
   }
@@ -60,13 +83,18 @@ export async function applyCacheInvalidations(
   options: ApplyCacheInvalidationsOptions,
 ): Promise<void> {
   validateCacheInvalidationSet(payload, options);
-  const unique = structuredClone([...new Map(payload.invalidations.map(value => [`${value.exact}:${canonical(value.queryKey)}`, value])).values()]);
+  const unique = structuredClone([
+    ...new Map(payload.invalidations.map(value => [`${value.exact}:${canonical(value.queryKey)}`, value])).values(),
+  ]);
   if (!unique.length) return;
-  const predicate: NonNullable<Parameters<QueryClient['invalidateQueries']>[0]>['predicate'] =
-    query => unique.some(invalidation => matchQuery(invalidation,query));
-  if (options.cancelInFlight) await queryClient.cancelQueries({predicate});
-  await queryClient.invalidateQueries({
-    predicate,
-    refetchType: options.refetchType ?? 'active',
-  }, {cancelRefetch: options.cancelRefetch,throwOnError:options.throwOnError ?? true});
+  const predicate: NonNullable<Parameters<QueryClient['invalidateQueries']>[0]>['predicate'] = query =>
+    unique.some(invalidation => matchQuery(invalidation, query));
+  if (options.cancelInFlight) await queryClient.cancelQueries({ predicate });
+  await queryClient.invalidateQueries(
+    {
+      predicate,
+      refetchType: options.refetchType ?? 'active',
+    },
+    { cancelRefetch: options.cancelRefetch, throwOnError: options.throwOnError ?? true },
+  );
 }

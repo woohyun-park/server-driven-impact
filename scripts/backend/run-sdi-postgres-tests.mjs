@@ -16,19 +16,21 @@ for (const name of ['SDI_POSTGRES_ADMIN_URL', 'SDI_POSTGRES_RUNTIME_URL']) {
 }
 
 const major = Number(process.env.SDI_POSTGRES_MAJOR);
-if(!['postgres','pg'].includes(process.env.SDI_POSTGRES_DRIVER ?? 'postgres'))throw new Error('Unsupported PostgreSQL driver');
+if (!['postgres', 'pg'].includes(process.env.SDI_POSTGRES_DRIVER ?? 'postgres'))
+  throw new Error('Unsupported PostgreSQL driver');
 if (!Number.isInteger(major) || major < 14 || major > 18) {
   throw new Error(`Unsupported PostgreSQL test major: ${process.env.SDI_POSTGRES_MAJOR}`);
 }
 
-const reportDirectory=mkdtempSync(join(tmpdir(),'sdi-conformance-'));
-const report=process.env.SDI_POSTGRES_REPORT ?? join(reportDirectory,'report.json');
+const reportDirectory = mkdtempSync(join(tmpdir(), 'sdi-conformance-'));
+const report = process.env.SDI_POSTGRES_REPORT ?? join(reportDirectory, 'report.json');
 const child = spawn(
   process.execPath,
   [
     'node_modules/vitest/vitest.mjs',
     'run',
-    '--config', 'sdi.vitest.config.ts',
+    '--config',
+    'sdi.vitest.config.ts',
     // Role/membership fixtures mutate cluster-wide catalogs included in artifact
     // fingerprints; do not overlap them with another file's compile/validate.
     '--no-file-parallelism',
@@ -41,7 +43,9 @@ const child = spawn(
     'tests/server-driven-impact/postgres-rls-dependency.integration.test.ts',
     'tests/server-driven-impact/native-orm.integration.test.ts',
     'tests/server-driven-impact/prisma.integration.test.ts',
-    '--reporter=default', '--reporter=json', `--outputFile.json=${report}`,
+    '--reporter=default',
+    '--reporter=json',
+    `--outputFile.json=${report}`,
   ],
   {
     cwd: new URL('../..', import.meta.url),
@@ -50,17 +54,23 @@ const child = spawn(
   },
 );
 
-child.on('error', error => { throw error; });
+child.on('error', error => {
+  throw error;
+});
 child.on('exit', (code, signal) => {
   try {
     if (signal) process.kill(process.pid, signal);
     else {
-      const result=JSON.parse(readFileSync(report,'utf8'));
-      if(result.numPendingTests || result.numPendingTestSuites || !result.numPassedTests) {
+      const result = JSON.parse(readFileSync(report, 'utf8'));
+      if (result.numPendingTests || result.numPendingTestSuites || !result.numPassedTests) {
         console.error('Required PostgreSQL conformance cannot skip fixtures.');
-        process.exitCode=1;
-      } else process.exitCode=code ?? 1;
+        process.exitCode = 1;
+      } else process.exitCode = code ?? 1;
     }
-  } catch(error) { console.error(error);process.exitCode=1; }
-  finally { rmSync(reportDirectory,{recursive:true,force:true}); }
+  } catch (error) {
+    console.error(error);
+    process.exitCode = 1;
+  } finally {
+    rmSync(reportDirectory, { recursive: true, force: true });
+  }
 });

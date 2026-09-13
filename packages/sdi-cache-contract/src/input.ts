@@ -3,7 +3,8 @@ import type { CacheInputField, CacheValue } from './types.js';
 
 export const own = (value: object, name: string): boolean => Object.hasOwn(value, name);
 export const isRecord = (value: unknown): value is Record<string, unknown> =>
-  value !== null && typeof value === 'object' &&
+  value !== null &&
+  typeof value === 'object' &&
   (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null);
 
 /** Bounded JSON validation, including sparse arrays and cyclic/non-JSON input. */
@@ -37,7 +38,8 @@ export function normalizeField(field: CacheInputField, value: unknown, path: str
     });
     if (field.order !== 'set') return items;
     return [...new Map(items.map(item => [canonical(item), item])).entries()]
-      .sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([, item]) => item);
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+      .map(([, item]) => item);
   }
   if (field.type === 'object') return normalizeFields(field.properties, value, path);
   let result: Scalar;
@@ -50,26 +52,48 @@ export function normalizeField(field: CacheInputField, value: unknown, path: str
     if (!Number.isFinite(date.valueOf())) throw new Error('INVALID_CACHE_INPUT:' + path);
     result = date.toISOString();
   } else if (typeof value === field.type && isScalar(value)) result = value;
-  else if (field.coerce && field.type === 'number' && typeof value === 'string' && value.trim() && Number.isFinite(Number(value))) result = Number(value);
-  else if (field.coerce && field.type === 'string' && (typeof value === 'boolean' || (typeof value === 'number' && Number.isFinite(value)))) result = String(value);
-  else if (field.coerce && field.type === 'boolean' && (value === 'true' || value === 'false')) result = value === 'true';
+  else if (
+    field.coerce &&
+    field.type === 'number' &&
+    typeof value === 'string' &&
+    value.trim() &&
+    Number.isFinite(Number(value))
+  )
+    result = Number(value);
+  else if (
+    field.coerce &&
+    field.type === 'string' &&
+    (typeof value === 'boolean' || (typeof value === 'number' && Number.isFinite(value)))
+  )
+    result = String(value);
+  else if (field.coerce && field.type === 'boolean' && (value === 'true' || value === 'false'))
+    result = value === 'true';
   else throw new Error('INVALID_CACHE_INPUT:' + path);
   if (field.format === 'uuid') {
     if (typeof result !== 'string' || !uuid.test(result)) throw new Error('INVALID_CACHE_UUID:' + path);
     result = result.toLowerCase();
   }
-  if (field.exclude?.some(item => canonical(item) === canonical(result))) throw new Error('CACHE_INPUT_EXCLUDED:' + path);
-  if (field.enum && !field.enum.some(item => canonical(item) === canonical(result))) throw new Error('CACHE_INPUT_ENUM:' + path);
+  if (field.exclude?.some(item => canonical(item) === canonical(result)))
+    throw new Error('CACHE_INPUT_EXCLUDED:' + path);
+  if (field.enum && !field.enum.some(item => canonical(item) === canonical(result)))
+    throw new Error('CACHE_INPUT_ENUM:' + path);
   return result;
 }
 
-export function normalizeFields(fields: Readonly<Record<string, CacheInputField>>, value: unknown, path = 'input'): Record<string, CacheValue> {
+export function normalizeFields(
+  fields: Readonly<Record<string, CacheInputField>>,
+  value: unknown,
+  path = 'input',
+): Record<string, CacheValue> {
   if (!isRecord(value)) throw new Error('INVALID_CACHE_INPUT:' + path);
-  for (const name of Object.keys(value)) if (!own(fields, name)) throw new Error('UNKNOWN_CACHE_INPUT:' + path + '.' + name);
-  return Object.fromEntries(Object.entries(fields).flatMap(([name, field]) => {
-    const normalized = normalizeField(field, own(value, name) ? value[name] : undefined, path + '.' + name);
-    return normalized === OMIT ? [] : [[name, normalized]];
-  }));
+  for (const name of Object.keys(value))
+    if (!own(fields, name)) throw new Error('UNKNOWN_CACHE_INPUT:' + path + '.' + name);
+  return Object.fromEntries(
+    Object.entries(fields).flatMap(([name, field]) => {
+      const normalized = normalizeField(field, own(value, name) ? value[name] : undefined, path + '.' + name);
+      return normalized === OMIT ? [] : [[name, normalized]];
+    }),
+  );
 }
 
 export function validateFields(fields: Readonly<Record<string, CacheInputField>>, depth = 0): void {
@@ -77,22 +101,28 @@ export function validateFields(fields: Readonly<Record<string, CacheInputField>>
   for (const [name, field] of Object.entries(fields)) {
     if (!name || !isRecord(field)) throw new Error('INVALID_CACHE_INPUT_SCHEMA');
     for (const flag of ['required', 'nullable', 'coerce']) {
-      if (own(field, flag) && typeof field[flag as keyof typeof field] !== 'boolean') throw new Error('INVALID_CACHE_INPUT_SCHEMA');
+      if (own(field, flag) && typeof field[flag as keyof typeof field] !== 'boolean')
+        throw new Error('INVALID_CACHE_INPUT_SCHEMA');
     }
     if (field.type === 'array') {
-      if (field.order !== undefined && !['preserve', 'set'].includes(field.order)) throw new Error('INVALID_CACHE_ARRAY_ORDER');
-      validateFields({item: field.items}, depth + 1);
+      if (field.order !== undefined && !['preserve', 'set'].includes(field.order))
+        throw new Error('INVALID_CACHE_ARRAY_ORDER');
+      validateFields({ item: field.items }, depth + 1);
     } else if (field.type === 'object') validateFields(field.properties, depth + 1);
     else {
-      if (!['string', 'number', 'boolean', 'date-time'].includes(field.type)) throw new Error('INVALID_CACHE_INPUT_TYPE');
-      if (field.format !== undefined && (field.type !== 'string' || field.format !== 'uuid')) throw new Error('INVALID_CACHE_INPUT_FORMAT');
-      for (const values of [field.enum, field.exclude]) if (values !== undefined) {
-        if (!Array.isArray(values) || !values.every(isScalar)) throw new Error('INVALID_CACHE_INPUT_DOMAIN');
-        for (const item of values) {
-          const normalized = normalizeField({...field, enum: undefined, exclude: undefined}, item, name);
-          if (normalized === OMIT || canonical(normalized) !== canonical(item)) throw new Error('CACHE_INPUT_DOMAIN_NOT_NORMALIZED:' + name);
+      if (!['string', 'number', 'boolean', 'date-time'].includes(field.type))
+        throw new Error('INVALID_CACHE_INPUT_TYPE');
+      if (field.format !== undefined && (field.type !== 'string' || field.format !== 'uuid'))
+        throw new Error('INVALID_CACHE_INPUT_FORMAT');
+      for (const values of [field.enum, field.exclude])
+        if (values !== undefined) {
+          if (!Array.isArray(values) || !values.every(isScalar)) throw new Error('INVALID_CACHE_INPUT_DOMAIN');
+          for (const item of values) {
+            const normalized = normalizeField({ ...field, enum: undefined, exclude: undefined }, item, name);
+            if (normalized === OMIT || canonical(normalized) !== canonical(item))
+              throw new Error('CACHE_INPUT_DOMAIN_NOT_NORMALIZED:' + name);
+          }
         }
-      }
       if (field.enum && !field.enum.length) throw new Error('EMPTY_CACHE_INPUT_ENUM');
     }
     if (own(field, 'default')) {
@@ -103,7 +133,11 @@ export function validateFields(fields: Readonly<Record<string, CacheInputField>>
 }
 
 /** A sufficient proof relative to the existing conservative protocol-1 matcher. */
-export function selectorValue(field: CacheInputField, expected: Scalar, verifiedExactString = false): CacheValue | undefined {
+export function selectorValue(
+  field: CacheInputField,
+  expected: Scalar,
+  verifiedExactString = false,
+): CacheValue | undefined {
   if (field.type === 'array' || field.type === 'object') return undefined;
   if (verifiedExactString && field.type === 'string' && typeof expected === 'string' && !field.coerce) {
     if (field.enum && !field.enum.some(value => canonical(value) === canonical(expected))) return undefined;
@@ -111,7 +145,9 @@ export function selectorValue(field: CacheInputField, expected: Scalar, verified
     return expected;
   }
   if (field.enum) {
-    const matches = field.enum.filter(value => matchesInputSelector({v: value}, {kind: 'inputs', values: [{v: expected}]}));
+    const matches = field.enum.filter(value =>
+      matchesInputSelector({ v: value }, { kind: 'inputs', values: [{ v: expected }] }),
+    );
     return matches.length === 1 ? matches[0] : undefined;
   }
   if (expected === null) return field.nullable ? null : undefined;

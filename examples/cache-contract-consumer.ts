@@ -10,8 +10,8 @@ export interface CommittedReply<T> {
   cacheInvalidation?: CacheInvalidationSet;
 }
 export type ConsumptionResult<T> =
-  | {status: 'retired-session'}
-  | {status: 'committed'; data: T; followUpErrors: unknown[]};
+  | { status: 'retired-session' }
+  | { status: 'committed'; data: T; followUpErrors: unknown[] };
 
 /** Example application coordinator, deliberately not part of the SDI executor. */
 export async function consumeCommittedReply<T>(options: {
@@ -23,24 +23,31 @@ export async function consumeCommittedReply<T>(options: {
   afterCommit: (data: T) => Promise<void>;
 }): Promise<ConsumptionResult<T>> {
   const response = await options.response; // Transport/unknown-commit failures are handled outside.
-  if (!options.isCurrentSession()) return {status:'retired-session'};
+  if (!options.isCurrentSession()) return { status: 'retired-session' };
   const followUpErrors: unknown[] = [];
-  try { await options.afterCommit(response.data); }
-  catch (error) { followUpErrors.push(error); }
-  if (!options.isCurrentSession()) return {status:'retired-session'};
+  try {
+    await options.afterCommit(response.data);
+  } catch (error) {
+    followUpErrors.push(error);
+  }
+  if (!options.isCurrentSession()) return { status: 'retired-session' };
   try {
     if (response.cacheInvalidation) {
-      await applyCacheInvalidations(options.queryClient,response.cacheInvalidation,{
-        contract:options.contract,scope:options.scope,cancelInFlight:true,
+      await applyCacheInvalidations(options.queryClient, response.cacheInvalidation, {
+        contract: options.contract,
+        scope: options.scope,
+        cancelInFlight: true,
       });
     } else {
       // No trustworthy impact instructions after a committed failure: broad resync.
       await options.queryClient.cancelQueries();
-      if (!options.isCurrentSession()) return {status:'retired-session'};
-      await options.queryClient.invalidateQueries({}, {throwOnError:true});
+      if (!options.isCurrentSession()) return { status: 'retired-session' };
+      await options.queryClient.invalidateQueries({}, { throwOnError: true });
     }
-  } catch (error) { followUpErrors.push(error); }
-  if (!options.isCurrentSession()) return {status:'retired-session'};
+  } catch (error) {
+    followUpErrors.push(error);
+  }
+  if (!options.isCurrentSession()) return { status: 'retired-session' };
   // Follow-up errors are for refresh UI/telemetry, never command retry or rollback.
-  return {status:'committed',data:response.data,followUpErrors};
+  return { status: 'committed', data: response.data, followUpErrors };
 }

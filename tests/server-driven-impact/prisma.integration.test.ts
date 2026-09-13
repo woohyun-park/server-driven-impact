@@ -11,19 +11,31 @@ import { generateObserverMigration } from '@server-driven-impact/postgres';
 import { prismaAdapter } from '@server-driven-impact/postgres/prisma';
 import { matchesInputSelector, type ImpactSet } from '@server-driven-impact/core';
 
-interface Effect { id: number; value: string; children?: { id: number; effectId: number }[] }
+interface Effect {
+  id: number;
+  value: string;
+  children?: { id: number; effectId: number }[];
+}
 interface Client {
   $disconnect(): Promise<void>;
   $queryRawUnsafe<T = unknown[]>(query: string, ...values: unknown[]): Promise<T>;
   $executeRawUnsafe(query: string, ...values: unknown[]): Promise<number>;
-  $transaction<T>(work: (client: Client) => Promise<T>, options?: { isolationLevel?: string; timeout?: number }): Promise<T>;
-  effect: { create(args: unknown): Promise<Effect>; findMany(args?: unknown): Promise<Effect[]>; delete(args: unknown): Promise<Effect> };
+  $transaction<T>(
+    work: (client: Client) => Promise<T>,
+    options?: { isolationLevel?: string; timeout?: number },
+  ): Promise<T>;
+  effect: {
+    create(args: unknown): Promise<Effect>;
+    findMany(args?: unknown): Promise<Effect[]>;
+    delete(args: unknown): Promise<Effect>;
+  };
 }
 const adminUrl = process.env.SDI_POSTGRES_ADMIN_URL;
 const runtimeUrl = process.env.SDI_POSTGRES_RUNTIME_URL;
 const enabled = !!adminUrl && !!runtimeUrl;
 if (process.env.SDI_POSTGRES_REQUIRED === '1' && !enabled) throw new Error('POSTGRES_FIXTURES_REQUIRED');
-for (const url of [adminUrl, runtimeUrl]) if (url && !['127.0.0.1', 'localhost', '::1'].includes(new URL(url).hostname)) throw new Error('LOCAL_FIXTURES_ONLY');
+for (const url of [adminUrl, runtimeUrl])
+  if (url && !['127.0.0.1', 'localhost', '::1'].includes(new URL(url).hostname)) throw new Error('LOCAL_FIXTURES_ONLY');
 
 describe.skipIf(!enabled)('Prisma 7.10 native observer conformance', () => {
   const schema = `sdi_prisma_${randomUUID().replaceAll('-', '')}`;
@@ -42,18 +54,29 @@ describe.skipIf(!enabled)('Prisma 7.10 native observer conformance', () => {
     child: { input, plan: q.select('children', { where: [q.eq('effectId', q.input('id'))] }) },
     audit: { input, plan: q.select('audits', { where: [q.eq('id', q.input('id'))] }) },
   });
-  const engine = enabled ? createImpact({
-    resources, queries,
-    adapter: prismaAdapter({ database: pool, schema, createClient: adapter => new PrismaClient({ adapter }) }),
-  }) : undefined!;
-  const included = (impact: ImpactSet, endpoint: string, id: number) => impact.targets.some(target => target.endpoint === endpoint && matchesInputSelector({ id }, target.selector));
+  const engine = enabled
+    ? createImpact({
+        resources,
+        queries,
+        adapter: prismaAdapter({ database: pool, schema, createClient: adapter => new PrismaClient({ adapter }) }),
+      })
+    : undefined!;
+  const included = (impact: ImpactSet, endpoint: string, id: number) =>
+    impact.targets.some(target => target.endpoint === endpoint && matchesInputSelector({ id }, target.selector));
   const run = (work: (client: Client) => Promise<unknown>) => engine.command({ scope: 'test' }, work);
 
   beforeAll(async () => {
     mkdirSync(resolve('.local'), { recursive: true });
     fixtureDirectory = mkdtempSync(resolve('.local/prisma-fixture-'));
-    writeFileSync(resolve(fixtureDirectory, 'schema.prisma'), readFileSync('scripts/experiments/prisma-transaction/schema.prisma'));
-    execFileSync(process.execPath, ['node_modules/prisma/build/index.js', 'generate', '--schema', resolve(fixtureDirectory, 'schema.prisma')], { stdio: 'pipe' });
+    writeFileSync(
+      resolve(fixtureDirectory, 'schema.prisma'),
+      readFileSync('scripts/experiments/prisma-transaction/schema.prisma'),
+    );
+    execFileSync(
+      process.execPath,
+      ['node_modules/prisma/build/index.js', 'generate', '--schema', resolve(fixtureDirectory, 'schema.prisma')],
+      { stdio: 'pipe' },
+    );
     PrismaClient = (await import(pathToFileURL(resolve(fixtureDirectory, 'generated/index.js')).href)).PrismaClient;
     await admin.query(`CREATE SCHEMA "${schema}";
       CREATE TABLE "${schema}".sdi_prisma_effect(id int PRIMARY KEY, value text NOT NULL);
@@ -64,7 +87,9 @@ describe.skipIf(!enabled)('Prisma 7.10 native observer conformance', () => {
       CREATE CONSTRAINT TRIGGER deferred_audit AFTER INSERT ON "${schema}".sdi_prisma_effect DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION "${schema}".deferred_audit();
       GRANT USAGE ON SCHEMA "${schema}" TO routine_runtime;
       GRANT SELECT,INSERT,UPDATE,DELETE ON ALL TABLES IN SCHEMA "${schema}" TO routine_runtime;`);
-    await admin.query(generateObserverMigration(resources, compileManifest(queries, resources), { runtimeRole: 'routine_runtime' }));
+    await admin.query(
+      generateObserverMigration(resources, compileManifest(queries, resources), { runtimeRole: 'routine_runtime' }),
+    );
     await engine.validate();
   });
   afterAll(async () => {
@@ -77,7 +102,10 @@ describe.skipIf(!enabled)('Prisma 7.10 native observer conformance', () => {
   it('collects nested model writes and deferred commit effects with precise inputs', async () => {
     const result = await run(async client => {
       const before = await client.$queryRawUnsafe<{ pid: number }[]>('SELECT pg_backend_pid() AS pid');
-      const effect = await client.effect.create({ data: { id: 1, value: 'first', children: { create: { id: 101 } } }, include: { children: true } });
+      const effect = await client.effect.create({
+        data: { id: 1, value: 'first', children: { create: { id: 101 } } },
+        include: { children: true },
+      });
       expect(await client.$queryRawUnsafe(`SELECT * FROM "${schema}".sdi_prisma_audit WHERE id=1`)).toEqual([]);
       const after = await client.$queryRawUnsafe<{ pid: number }[]>('SELECT pg_backend_pid() AS pid');
       expect(after).toEqual(before);
@@ -93,7 +121,9 @@ describe.skipIf(!enabled)('Prisma 7.10 native observer conformance', () => {
 
   it('rolls back a rejected nested write while keeping a later successful write', async () => {
     const result = await run(async client => {
-      await expect(client.effect.create({ data: { id: 2, value: 'cancel', children: { create: { id: 101 } } } })).rejects.toThrow();
+      await expect(
+        client.effect.create({ data: { id: 2, value: 'cancel', children: { create: { id: 101 } } } }),
+      ).rejects.toThrow();
       return client.effect.create({ data: { id: 3, value: 'keep' } });
     });
     expect(included(result.impact, 'effect', 2)).toBe(false);
@@ -105,8 +135,15 @@ describe.skipIf(!enabled)('Prisma 7.10 native observer conformance', () => {
 
   it('maps interactive Prisma transactions to guarded savepoints and rejects child isolation changes', async () => {
     const result = await run(async client => {
-      await expect(client.$transaction(async tx => { await tx.effect.create({ data: { id: 4, value: 'cancel' } }); throw new Error('cancel'); })).rejects.toThrow('cancel');
-      await expect(client.$transaction(async () => 1, { isolationLevel: 'Serializable' })).rejects.toThrow('PRISMA_NESTED_ISOLATION_UNSUPPORTED');
+      await expect(
+        client.$transaction(async tx => {
+          await tx.effect.create({ data: { id: 4, value: 'cancel' } });
+          throw new Error('cancel');
+        }),
+      ).rejects.toThrow('cancel');
+      await expect(client.$transaction(async () => 1, { isolationLevel: 'Serializable' })).rejects.toThrow(
+        'PRISMA_NESTED_ISOLATION_UNSUPPORTED',
+      );
       return client.$transaction(tx => tx.effect.create({ data: { id: 5, value: 'keep' } }));
     });
     expect(included(result.impact, 'effect', 4)).toBe(false);
@@ -116,20 +153,30 @@ describe.skipIf(!enabled)('Prisma 7.10 native observer conformance', () => {
   it('rejects outer rollback, deferred commit failure, and late lazy execution', async () => {
     let captured!: Client;
     let lazy!: Promise<Effect[]>;
-    await expect(run(async client => {
-      captured = client;
-      lazy = client.effect.findMany();
-      await client.effect.create({ data: { id: 6, value: 'rollback' } });
-      throw new Error('outer rollback');
-    })).rejects.toThrow('outer rollback');
+    await expect(
+      run(async client => {
+        captured = client;
+        lazy = client.effect.findMany();
+        await client.effect.create({ data: { id: 6, value: 'rollback' } });
+        throw new Error('outer rollback');
+      }),
+    ).rejects.toThrow('outer rollback');
     await expect(captured.effect.findMany()).rejects.toThrow('WRITE_CONTEXT_CLOSED');
     await expect(lazy).rejects.toThrow('WRITE_CONTEXT_CLOSED');
-    await expect(run(client => client.$executeRawUnsafe(`INSERT INTO "${schema}".sdi_prisma_audit VALUES(999)`))).rejects.toMatchObject({ code: '23503' });
+    await expect(
+      run(client => client.$executeRawUnsafe(`INSERT INTO "${schema}".sdi_prisma_audit VALUES(999)`)),
+    ).rejects.toMatchObject({ code: '23503' });
     expect((await admin.query(`SELECT id FROM "${schema}".sdi_prisma_effect WHERE id=6`)).rows).toEqual([]);
   });
 
   it('isolates concurrent commands and observes native cascading writes', async () => {
-    const results = await Promise.all([7, 8].map(id => run(client => client.effect.create({ data: { id, value: 'parallel', children: { create: { id: id + 100 } } } }))));
+    const results = await Promise.all(
+      [7, 8].map(id =>
+        run(client =>
+          client.effect.create({ data: { id, value: 'parallel', children: { create: { id: id + 100 } } } }),
+        ),
+      ),
+    );
     for (let index = 0; index < results.length; index++) {
       expect(included(results[index].impact, 'effect', index + 7)).toBe(true);
       expect(included(results[index].impact, 'effect', 8 - index)).toBe(false);
@@ -146,32 +193,45 @@ describe.skipIf(!enabled)('Prisma 7.10 native observer conformance', () => {
   it('settles an unawaited interactive transaction before rejecting the command', async () => {
     let entered!: () => void;
     let release!: () => void;
-    const active = new Promise<void>(resolve => { entered = resolve; });
-    const gate = new Promise<void>(resolve => { release = resolve; });
+    const active = new Promise<void>(resolve => {
+      entered = resolve;
+    });
+    const gate = new Promise<void>(resolve => {
+      release = resolve;
+    });
     let transaction!: Promise<unknown>;
-    await expect(run(async client => {
-      transaction = client.$transaction(async tx => {
-        await tx.effect.create({ data: { id: 9, value: 'unawaited' } });
-        entered();
-        await gate;
-        return 9;
-      });
-      void transaction.catch(() => {});
-      await active;
-    })).rejects.toThrow('UNAWAITED_DATABASE_OPERATION');
+    await expect(
+      run(async client => {
+        transaction = client.$transaction(async tx => {
+          await tx.effect.create({ data: { id: 9, value: 'unawaited' } });
+          entered();
+          await gate;
+          return 9;
+        });
+        void transaction.catch(() => {});
+        await active;
+      }),
+    ).rejects.toThrow('UNAWAITED_DATABASE_OPERATION');
     release();
     await expect(transaction).rejects.toThrow();
     expect((await admin.query(`SELECT id FROM "${schema}".sdi_prisma_effect WHERE id=9`)).rows).toEqual([]);
-    expect((await run(client => client.effect.create({ data: { id: 10, value: 'next command' } })))).toHaveProperty('impact');
+    expect(await run(client => client.effect.create({ data: { id: 10, value: 'next command' } }))).toHaveProperty(
+      'impact',
+    );
   });
 
   it('rolls back a timed out Prisma savepoint before continuing the command', async () => {
     const result = await run(async client => {
-      await expect(client.$transaction(async tx => {
-        await tx.effect.create({ data: { id: 11, value: 'timeout' } });
-        await new Promise(resolve => setTimeout(resolve, 60));
-        return tx.effect.findMany();
-      }, { timeout: 30 })).rejects.toThrow();
+      await expect(
+        client.$transaction(
+          async tx => {
+            await tx.effect.create({ data: { id: 11, value: 'timeout' } });
+            await new Promise(resolve => setTimeout(resolve, 60));
+            return tx.effect.findMany();
+          },
+          { timeout: 30 },
+        ),
+      ).rejects.toThrow();
       return client.effect.create({ data: { id: 12, value: 'retained' } });
     });
     expect(included(result.impact, 'effect', 11)).toBe(false);
