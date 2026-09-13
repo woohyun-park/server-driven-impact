@@ -234,31 +234,35 @@ describe('nested q.call and verified string caching', () => {
       },
     },
   };
-  function nestedContract() {
+  const operationIds = {
+    'profiles.byUsername': 'profileByUsername',
+    'profiles.viaCall': 'profileViaCall',
+    'profiles.viaMappedCall': 'profileViaMappedCall',
+  } as const;
+  type ContractEndpoint = keyof typeof operationIds;
+  function nestedContract(endpoints: readonly ContractEndpoint[]) {
     return defineCacheContract({
       id: 'profiles-nested-call',
       version: 1,
-      queries: [
-        {
-          operationId: 'profileByUsername',
-          endpoint: 'profiles.byUsername',
-          kind: 'query' as const,
-          input: { username: { type: 'string' as const, required: true } },
-          key: { prefix: ['profiles', 'byUsername'], path: ['username'] },
-          fallback: ['profiles', 'byUsername'],
-        },
-        {
-          operationId: 'profileViaCall',
-          endpoint: 'profiles.viaCall',
-          kind: 'query' as const,
-          input: { username: { type: 'string' as const, required: true } },
-          key: { prefix: ['profiles', 'viaCall'], path: ['username'] },
-          fallback: ['profiles', 'viaCall'],
-        },
-      ],
+      queries: endpoints.map(endpoint => ({
+        operationId: operationIds[endpoint],
+        endpoint,
+        kind: 'query' as const,
+        input: { username: { type: 'string' as const, required: true } },
+        key: { prefix: ['profiles', endpoint], path: ['username'] },
+        fallback: ['profiles', endpoint],
+      })),
+      // Coverage is mandatory, so an endpoint this scenario does not declare is recorded as one the
+      // client never calls rather than left out of the contract.
+      excludedEndpoints: (Object.keys(operationIds) as ContractEndpoint[])
+        .filter(endpoint => !endpoints.includes(endpoint))
+        .map(endpoint => ({ endpoint, reason: 'not-consumed' as const })),
     });
   }
-  async function nestedEngine(inner: StandardSchemaV1<{ username: string }, { username: string }>) {
+  async function nestedEngine(
+    inner: StandardSchemaV1<{ username: string }, { username: string }>,
+    declared: readonly ContractEndpoint[],
+  ) {
     const database = newDatabase();
     database.exec('pragma foreign_keys=on; create table profiles(id text primary key, username text not null)');
     database.exec("insert into profiles values('1','alice')");
@@ -270,19 +274,28 @@ describe('nested q.call and verified string caching', () => {
       // No input mapper, so compileManifest keeps the nested binding and the outer endpoint
       // claims a narrow selector on `username`.
       'profiles.viaCall': { input: usernameSchema, plan: q.call('profiles.byUsername') },
+      // The direct select keeps this endpoint's own proven binding on `username`, while the mapped
+      // call ends the identity chain, so `readsFor` drops the bindings reached through it.
+      'profiles.viaMappedCall': {
+        input: usernameSchema,
+        plan: q.combine({
+          direct: q.select('profiles', { where: [q.eq('username', q.input('username'))] }),
+          mapped: q.call('profiles.byUsername', value => ({ username: String(value.username) })),
+        }),
+      },
     });
     const engine = createImpact({
       resources: profileResources,
       queries,
       adapter: sqliteAdapter({ database }),
-      cacheContracts: [nestedContract()],
+      cacheContracts: [nestedContract(declared)],
     });
     await engine.validate();
     return engine;
   }
 
   it('rejects a nested schema that transforms a verified string, exactly as the direct call does', async () => {
-    const engine = await nestedEngine(loweringSchema);
+    const engine = await nestedEngine(loweringSchema, ['profiles.byUsername', 'profiles.viaCall']);
     // Both routes reach the same transforming schema; neither may execute SQL on a value the
     // caller's cache key and the impact selector do not carry.
     await expect(engine.query('profiles.byUsername', { username: 'Alice' }, { scope: null })).rejects.toThrow(
@@ -293,8 +306,28 @@ describe('nested q.call and verified string caching', () => {
     );
   });
 
+  it('rejects a transforming callee the contract never names, because the caller endpoint declared it', async () => {
+    // The cache key belongs to the endpoint the client called. A contract that names only that
+    // endpoint still requires the value reaching the executed SQL to be the one the client supplied,
+    // even though no contract names the callee whose schema rewrites it.
+    const engine = await nestedEngine(loweringSchema, ['profiles.viaCall']);
+    await expect(engine.query('profiles.viaCall', { username: 'Alice' }, { scope: null })).rejects.toThrow(
+      'QUERY_INPUT_PRESERVATION_VIOLATION:username',
+    );
+  });
+
+  it('allows a transforming callee behind an input mapper, where impact has already widened', async () => {
+    // Guards against over-correcting: the mapper ends the identity chain, `readsFor` dropped the
+    // bindings reached through it, so the callee's transform cannot desynchronize any selector.
+    const engine = await nestedEngine(loweringSchema, ['profiles.viaMappedCall']);
+    expect(await engine.query('profiles.viaMappedCall', { username: 'Alice' }, { scope: null })).toEqual({
+      direct: [],
+      mapped: [{ id: '1', username: 'alice' }],
+    });
+  });
+
   it('keeps a non-transforming nested schema working and still emits the narrow selector', async () => {
-    const engine = await nestedEngine(usernameSchema);
+    const engine = await nestedEngine(usernameSchema, ['profiles.byUsername', 'profiles.viaCall']);
     expect(await engine.query('profiles.viaCall', { username: 'alice' }, { scope: null })).toEqual([
       { id: '1', username: 'alice' },
     ]);

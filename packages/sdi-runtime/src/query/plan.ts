@@ -422,6 +422,12 @@ export async function executePlan(
   execute: (plan: ExecutableQueryPlan, input: Input) => Promise<unknown[]>,
   resources: Resources,
   exactStringInputs: (endpoint: string) => readonly string[],
+  /**
+   * Exact-string fields carried from the endpoint the caller actually requested. The cache key is
+   * built from the contract on THAT endpoint, so every hop that still receives the caller's own input
+   * must preserve these, whether or not a contract happens to name the hop as well.
+   */
+  requiredStringInputs: readonly string[],
 ): Promise<unknown> {
   switch (plan.kind) {
     case 'select': {
@@ -438,32 +444,75 @@ export async function executePlan(
       const raw = plan.input ? plan.input(input) : input;
       const parsed = await query.input.parse(raw);
       if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('INVALID_QUERY_INPUT');
-      // The nested schema re-parses a value the caller's cache key already committed to, so it needs the
-      // same preservation check the top level applies. Only without an input mapper: `readsFor` already
-      // drops this endpoint's bindings when one is present, which widens impact instead of narrowing it.
-      if (!plan.input) assertInputPreserved(raw, parsed, exactStringInputs(plan.endpoint));
-      return executePlan(query.plan, parsed as Input, queries, execute, resources, exactStringInputs);
+      // An input mapper ends the identity chain: `readsFor` drops this endpoint's bindings, so impact
+      // has already widened and nothing below has to reproduce the caller's exact string.
+      let carried: readonly string[] = [];
+      if (!plan.input) {
+        // The nested schema re-parses a value the caller's cache key already committed to, so it needs
+        // the same preservation check the top level applies. Both lists matter: a field declared only on
+        // the requested endpoint and one declared only on this callee each need preserving.
+        const callee = exactStringInputs(plan.endpoint);
+        carried = callee.length ? [...new Set([...requiredStringInputs, ...callee])] : requiredStringInputs;
+        assertInputPreserved(raw, parsed, carried);
+      }
+      return executePlan(query.plan, parsed as Input, queries, execute, resources, exactStringInputs, carried);
     }
     case 'combine': {
       // One connection/snapshot; keep statements sequential rather than pretending parallel transactions.
       const data: Record<string, unknown> = {};
       for (const [key, child] of Object.entries(plan.children))
-        data[key] = await executePlan(child, input, queries, execute, resources, exactStringInputs);
+        data[key] = await executePlan(
+          child,
+          input,
+          queries,
+          execute,
+          resources,
+          exactStringInputs,
+          requiredStringInputs,
+        );
       return data;
     }
     case 'when':
-      return executePlan(plan.test(input) ? plan.yes : plan.no, input, queries, execute, resources, exactStringInputs);
+      return executePlan(
+        plan.test(input) ? plan.yes : plan.no,
+        input,
+        queries,
+        execute,
+        resources,
+        exactStringInputs,
+        requiredStringInputs,
+      );
     case 'bind': {
-      const data = await executePlan(plan.parent, input, queries, execute, resources, exactStringInputs);
+      const data = await executePlan(
+        plan.parent,
+        input,
+        queries,
+        execute,
+        resources,
+        exactStringInputs,
+        requiredStringInputs,
+      );
       const next = plan.input(data, input);
-      return next === null ? [] : executePlan(plan.child, next, queries, execute, resources, exactStringInputs);
+      // The child's input is derived, not the caller's, and `readsFor` already dropped its bindings.
+      return next === null ? [] : executePlan(plan.child, next, queries, execute, resources, exactStringInputs, []);
     }
     case 'map':
-      return plan.project(await executePlan(plan.source, input, queries, execute, resources, exactStringInputs), input);
+      return plan.project(
+        await executePlan(plan.source, input, queries, execute, resources, exactStringInputs, requiredStringInputs),
+        input,
+      );
     case 'choose': {
       const choice = plan.choose(input);
       if (!Object.hasOwn(plan.choices, choice)) throw new Error('Unregistered query choice');
-      return executePlan(plan.choices[choice], input, queries, execute, resources, exactStringInputs);
+      return executePlan(
+        plan.choices[choice],
+        input,
+        queries,
+        execute,
+        resources,
+        exactStringInputs,
+        requiredStringInputs,
+      );
     }
   }
 }

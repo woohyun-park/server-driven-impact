@@ -180,9 +180,10 @@ export function createImpact<Db, Q extends Record<string, QueryDefinition>>(opti
       const scope = scopeOf(context);
       if (!Object.hasOwn(queries, endpoint)) throw new Error('UNKNOWN_QUERY');
       if (requiresNoStore(queries[endpoint].plan, queries)) throw new Error('QUERY_REQUIRES_NO_STORE_EXECUTION');
-      const parsed = await parseInput(queries[endpoint], input, exactStringInputs(endpoint));
+      const required = exactStringInputs(endpoint);
+      const parsed = await parseInput(queries[endpoint], input, required);
       return adapter.query(scope, select =>
-        executePlan(queries[endpoint].plan, parsed, queries, select, resources, exactStringInputs),
+        executePlan(queries[endpoint].plan, parsed, queries, select, resources, exactStringInputs, required),
       ) as Promise<OutputOf<Q[K]['plan']>>;
     },
     /** Each invocation executes anew. This response must never enter a reusable query cache. */
@@ -193,9 +194,10 @@ export function createImpact<Db, Q extends Record<string, QueryDefinition>>(opti
     ): Promise<{ data: OutputOf<Q[K]['plan']>; cachePolicy: 'no-store' }> {
       const scope = scopeOf(context);
       if (!Object.hasOwn(queries, endpoint)) throw new Error('UNKNOWN_QUERY');
-      const parsed = await parseInput(queries[endpoint], input, exactStringInputs(endpoint));
+      const required = exactStringInputs(endpoint);
+      const parsed = await parseInput(queries[endpoint], input, required);
       const data = (await adapter.query(scope, select =>
-        executePlan(queries[endpoint].plan, parsed, queries, select, resources, exactStringInputs),
+        executePlan(queries[endpoint].plan, parsed, queries, select, resources, exactStringInputs, required),
       )) as OutputOf<Q[K]['plan']>;
       return { data, cachePolicy: 'no-store' as const };
     },
