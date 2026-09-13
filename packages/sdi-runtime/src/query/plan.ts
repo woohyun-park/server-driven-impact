@@ -8,6 +8,8 @@ import {
   type ReadDependency,
 } from '@server-driven-impact/core';
 import { validateResources, type Resources } from '../resources.js';
+import { toParse, type Input, type InputSchema } from './input.js';
+export type { Input } from './input.js';
 type ResourceId = string;
 export type { ReadDependency } from '@server-driven-impact/core';
 export interface PostgresPolicyProof {
@@ -34,7 +36,6 @@ export function validateManifest(manifest: QueryManifest, resources: Resources):
   if (byteLength(manifest) > LIMITS.manifestBytes) throw new Error('MANIFEST_LIMIT');
 }
 
-export type Input = Record<string, unknown>;
 export type Value = { kind: 'input'; field: string } | { kind: 'literal'; value: unknown };
 export type AtomicPredicate = {
   kind?: 'atomic';
@@ -86,7 +87,7 @@ export type Plan =
   | { kind: 'bind'; parent: Plan; child: Plan; input: (data: unknown, input: Input) => Input | null }
   | { kind: 'map'; source: Plan; project: (data: unknown, input: Input) => unknown }
   | { kind: 'choose'; choices: Record<string, Plan>; choose: (input: Input) => string };
-export type QueryDefinition = { input: { parse(value: unknown): unknown }; plan: Plan };
+export type QueryDefinition<S extends InputSchema<any, any> = InputSchema<any, any>> = { input: S; plan: Plan };
 export type Manifest = QueryManifest & { sources: Record<string, string[]>; dependents: Record<string, string[]> };
 
 /** A no-store child makes the entire composed endpoint non-cacheable. */
@@ -404,13 +405,8 @@ export async function executePlan(
     case 'call': {
       if (!Object.hasOwn(queries, plan.endpoint)) throw new Error(`Query missing: ${plan.endpoint}`);
       const query = queries[plan.endpoint];
-      return executePlan(
-        query.plan,
-        query.input.parse(plan.input ? plan.input(input) : input) as Input,
-        queries,
-        execute,
-        resources,
-      );
+      const parsed = (await toParse(query.input)(plan.input ? plan.input(input) : input)) as Input;
+      return executePlan(query.plan, parsed, queries, execute, resources);
     }
     case 'combine': {
       // One connection/snapshot; keep statements sequential rather than pretending parallel transactions.

@@ -10,6 +10,7 @@ import {
   type Plan,
   type QueryDefinition,
 } from '../query/plan.js';
+import { toParse } from '../query/input.js';
 import { bindAdapter, type ImpactAdapter } from './adapter.js';
 import { ImpactUnavailableError } from './errors.js';
 import {
@@ -51,8 +52,12 @@ function scopeOf(context: Context): Scalar {
   if (!context || !Object.hasOwn(context, 'scope') || !isScalar(context.scope)) throw new Error('INVALID_SCOPE');
   return context.scope;
 }
-function parseInput(definition: QueryDefinition, value: unknown, exactStringInputs: readonly string[] = []): Input {
-  const input = definition.input.parse(value);
+async function parseInput(
+  definition: QueryDefinition,
+  value: unknown,
+  exactStringInputs: readonly string[] = [],
+): Promise<Input> {
+  const input = await toParse(definition.input)(value);
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('INVALID_QUERY_INPUT');
   if (exactStringInputs.length) {
     if (!value || typeof value !== 'object' || Array.isArray(value))
@@ -83,8 +88,8 @@ export function createImpact<Db, Q extends Record<string, QueryDefinition>>(opti
   const resources = snapshot(JSON.parse(canonical(options.resources)) as Resources);
   const queries: Record<string, QueryDefinition> = Object.create(null);
   for (const [name, query] of Object.entries(options.queries)) {
-    if (!query?.input || typeof query.input.parse !== 'function') throw new Error('INVALID_QUERY_DEFINITION');
-    const parse = query.input.parse.bind(query.input);
+    if (!query?.input) throw new Error('INVALID_QUERY_DEFINITION');
+    const parse = toParse(query.input);
     if (!query.plan) throw new Error('QUERY_PLAN_REQUIRED');
     queries[name] = Object.freeze({ input: { parse }, plan: snapshot<Plan>(query.plan) });
   }
@@ -181,14 +186,14 @@ export function createImpact<Db, Q extends Record<string, QueryDefinition>>(opti
       const scope = scopeOf(context);
       if (!Object.hasOwn(queries, endpoint)) throw new Error('UNKNOWN_QUERY');
       if (requiresNoStore(queries[endpoint].plan, queries)) throw new Error('QUERY_REQUIRES_NO_STORE_EXECUTION');
-      const parsed = parseInput(queries[endpoint], input, exactStringInputs(endpoint));
+      const parsed = await parseInput(queries[endpoint], input, exactStringInputs(endpoint));
       return adapter.query(scope, select => executePlan(queries[endpoint].plan, parsed, queries, select, resources));
     },
     /** Each invocation executes anew. This response must never enter a reusable query cache. */
     async queryUncached(endpoint: keyof Q & string, input: unknown, context: Context) {
       const scope = scopeOf(context);
       if (!Object.hasOwn(queries, endpoint)) throw new Error('UNKNOWN_QUERY');
-      const parsed = parseInput(queries[endpoint], input, exactStringInputs(endpoint));
+      const parsed = await parseInput(queries[endpoint], input, exactStringInputs(endpoint));
       const data = await adapter.query(scope, select =>
         executePlan(queries[endpoint].plan, parsed, queries, select, resources),
       );

@@ -6,6 +6,13 @@ export type { ImpactAdapter } from './runtime/adapter.js';
 export { q, defineQueries, compileManifest } from './query/index.js';
 export type {
   Input,
+  InputOf,
+  InputParser,
+  InputSchema,
+  ParsedInputOf,
+  StandardIssue,
+  StandardResult,
+  StandardSchemaV1,
   QueryDefinition,
   Plan,
   SelectPlan,
