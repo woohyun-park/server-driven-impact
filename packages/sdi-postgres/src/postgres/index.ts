@@ -28,6 +28,7 @@ import { randomUUID } from 'node:crypto';
 import { CommitStateUnknownError, ImpactUnavailableError } from '@server-driven-impact/runtime/adapter';
 import { createPostgresCatalogResolver } from './catalog-resolver.js';
 import { lockSession, releaseSession } from './session.js';
+import { commandPreambleSql, ISOLATION_LEVELS, type IsolationLevel } from './preamble.js';
 import type { PostgresSetupTransaction } from './public-types.js';
 
 export { sql, Sql, identifier, join } from './sql.js';
@@ -134,10 +135,9 @@ export function postgresAdapter<T extends Record<string, unknown>>(
   if (!options?.database || typeof options.database.begin !== 'function')
     throw new Error('POSTGRES_CONNECTION_REQUIRED');
   if ('writeAccess' in options || 'routines' in options) throw new Error('POSTGRES_LEGACY_COMMAND_OPTIONS_REMOVED');
-  const isolationLevel = options.isolationLevel ?? 'repeatable read';
+  const isolationLevel = (options.isolationLevel ?? 'repeatable read') as IsolationLevel;
   if (options.connectionMode === 'transaction') throw new Error('POSTGRES_SESSION_CONNECTION_REQUIRED');
-  if (!['read uncommitted', 'read committed', 'repeatable read', 'serializable'].includes(isolationLevel))
-    throw new Error('INVALID_ISOLATION_LEVEL');
+  if (!ISOLATION_LEVELS.includes(isolationLevel)) throw new Error('INVALID_ISOLATION_LEVEL');
   return Object.freeze({
     [bindAdapter](resources: Resources, manifest: QueryManifest) {
       let quarantined = false;
@@ -293,22 +293,7 @@ export function postgresAdapter<T extends Record<string, unknown>>(
           let committed = false;
           let broken = false;
           try {
-            await lockSession(session);
-            await session.unsafe(`do $sdi$
-              begin
-                if to_regclass('pg_temp.${observerInternals.collectorTable}') is null then
-                  create temporary table ${observerInternals.collectorTable}(
-                    token text not null,resource text not null,operation text not null,
-                    before_state jsonb not null,after_state jsonb not null,changed_columns jsonb
-                  ) on commit preserve rows;
-                end if;
-              end
-            $sdi$`);
-            await session.unsafe(`begin isolation level ${isolationLevel}`);
-            await session.unsafe("select set_config('sdi.request_token',$1,true),set_config('sdi.scope',$2,true)", [
-              token,
-              String(scope),
-            ]);
+            await session.unsafe(commandPreambleSql({ isolationLevel, token, scope }));
             await options.setup?.(session, scope);
             const nativeExecution = (session as Transaction & Partial<DriverExecution<PostgresExecuteResult>>)[
               executeDriver
