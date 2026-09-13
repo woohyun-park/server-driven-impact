@@ -1,16 +1,16 @@
 import type { Transaction } from './tracked-db.js';
 
 export type ReservedSession = Transaction & { release(): void | Promise<void>; discard?(): void | Promise<void> };
-const lockKeys = [0x534449, 0x5047];
+export const lockKeys = [0x534449, 0x5047] as const;
 
 /** A session lock precedes BEGIN so a waiting request cannot retain an old catalog snapshot. */
 export async function lockSession(session: ReservedSession) {
-  await session.unsafe('select pg_advisory_lock_shared($1,$2)', lockKeys);
+  await session.unsafe('select pg_advisory_lock_shared($1,$2)', [...lockKeys]);
 }
 export async function releaseSession(session: ReservedSession, broken = false) {
   if (!broken) {
     try {
-      await session.unsafe('select pg_advisory_unlock_shared($1,$2)', lockKeys);
+      await session.unsafe('select pg_advisory_unlock_shared($1,$2)', [...lockKeys]);
       await session.release();
       return true;
     } catch {

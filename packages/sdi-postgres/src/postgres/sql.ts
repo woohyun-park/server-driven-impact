@@ -30,3 +30,8 @@ export function identifier(name: string): Sql {
   if (!name || name.includes('\0')) throw new Error('INVALID_IDENTIFIER');
   return new Sql('"' + name.replaceAll('"', '""') + '"');
 }
+/** Single-quoted SQL literal. Only for trusted server-generated values that must be inlined. */
+export function literal(value: string): string {
+  if (value.includes('\0')) throw new Error('INVALID_LITERAL');
+  return `'${value.replaceAll("'", "''")}'`;
+}

@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { canonical, isScalar, LIMITS, type RowState, type Scalar, type WriteFact } from '@server-driven-impact/core';
 import { identityColumns, type QueryManifest, type Resources } from '@server-driven-impact/runtime/adapter';
+import { literal } from './sql.js';
 
 export interface ObserverRow {
   resource: string;
@@ -23,9 +24,6 @@ export function observerLayout(fingerprint: string) {
 function identifier(value: string): string {
   if (!value || value.includes('\0')) throw new Error('INVALID_IDENTIFIER');
   return `"${value.replaceAll('"', '""')}"`;
-}
-function literal(value: string): string {
-  return `'${value.replaceAll("'", "''")}'`;
 }
 function functionName(resourceId: string, operation: string): string {
   return `observe_${createHash('sha256').update(resourceId).digest('hex').slice(0, 12)}_${operation}`;
