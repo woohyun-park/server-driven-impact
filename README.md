@@ -219,6 +219,7 @@ See the [cache-contract migration guide](./docs/migrations/cache-contract-0.5.md
 
 ```bash
 pnpm install
+pnpm lint
 pnpm typecheck
 pnpm test
 pnpm pack:check

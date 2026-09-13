@@ -217,6 +217,7 @@ SDI는 지원되는 작업이 SDI engine과 adapter가 소유한 transaction을 
 
 ```bash
 pnpm install
+pnpm lint
 pnpm typecheck
 pnpm test
 pnpm pack:check
