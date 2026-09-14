@@ -1,5 +1,5 @@
 export { createImpact } from './runtime/index.js';
-export type { Context, CommandOptions, CommandResult, CommandInvalidationResult } from './runtime/index.js';
+export type { Context, CommandResult } from './runtime/index.js';
 export { ImpactUnavailableError, CommitStateUnknownError, isCommitOutcomeError } from './runtime/errors.js';
 export type { CommitState } from './runtime/errors.js';
 export type { ImpactAdapter } from './runtime/adapter.js';

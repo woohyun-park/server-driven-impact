@@ -19,14 +19,7 @@ function run(command, args, cwd = destination, env = process.env) {
   return execFileSync(command, args, { cwd, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
 }
 
-const packageDirectories = [
-  'sdi-core',
-  'sdi-cache-contract',
-  'sdi-runtime',
-  'sdi-postgres',
-  'sdi-sqlite',
-  'sdi-tanstack-query',
-];
+const packageDirectories = ['sdi-core', 'sdi-runtime', 'sdi-postgres', 'sdi-sqlite'];
 const archives = {};
 for (const directory of packageDirectories) {
   const packageManifest = JSON.parse(await readFile(resolve(root, 'packages', directory, 'package.json'), 'utf8'));
@@ -65,12 +58,9 @@ await writeFile(
     packageManager: 'pnpm@10.33.0',
     dependencies: {
       '@server-driven-impact/core': `file:./${archives['sdi-core']}`,
-      '@server-driven-impact/cache-contract': `file:./${archives['sdi-cache-contract']}`,
       '@server-driven-impact/runtime': `file:./${archives['sdi-runtime']}`,
       '@server-driven-impact/postgres': `file:./${archives['sdi-postgres']}`,
       '@server-driven-impact/sqlite': `file:./${archives['sdi-sqlite']}`,
-      '@server-driven-impact/tanstack-query': `file:./${archives['sdi-tanstack-query']}`,
-      '@tanstack/query-core': '5.102.8',
       pg: '8.16.3',
       'pg-copy-streams': '7.0.0',
       postgres: '3.4.8',
@@ -78,11 +68,9 @@ await writeFile(
     pnpm: {
       overrides: {
         '@server-driven-impact/core': `file:./${archives['sdi-core']}`,
-        '@server-driven-impact/cache-contract': `file:./${archives['sdi-cache-contract']}`,
         '@server-driven-impact/runtime': `file:./${archives['sdi-runtime']}`,
         '@server-driven-impact/postgres': `file:./${archives['sdi-postgres']}`,
         '@server-driven-impact/sqlite': `file:./${archives['sdi-sqlite']}`,
-        '@server-driven-impact/tanstack-query': `file:./${archives['sdi-tanstack-query']}`,
       },
     },
     devDependencies: { '@types/node': '25.9.1', '@types/pg': '8.15.5', typescript: '6.0.3' },
@@ -96,16 +84,14 @@ for (const name of ['domain.ts', 'demo.ts', 'postgres-demo.ts']) {
 await writeFile(
   resolve(destination, 'consumer.ts'),
   `import {calculateImpact} from '@server-driven-impact/core';
-import {defineCacheContract,buildQueryKey,prepareCacheQuery,buildQueryExecutionInput,validateCacheContractCoverage} from '@server-driven-impact/cache-contract';
-import {createImpact,defineQueries,q,type CommandOptions} from '@server-driven-impact/runtime';
-import {applyCacheInvalidations} from '@server-driven-impact/tanstack-query';
+import {createImpact,defineQueries,q} from '@server-driven-impact/runtime';
 import {describeQueries} from '@server-driven-impact/runtime/debug';
 import * as postgresAdapter from '@server-driven-impact/postgres';
 import {pgAdapter,type PgCommandDb} from '@server-driven-impact/postgres/pg';
 import {sqliteAdapter,type SqliteCommandDb} from '@server-driven-impact/sqlite';
 import type {StatementResultingChanges,SQLInputValue,SQLOutputValue} from 'node:sqlite';
 import {DatabaseSync} from 'node:sqlite';
-for (const value of [calculateImpact,defineCacheContract,buildQueryKey,prepareCacheQuery,buildQueryExecutionInput,validateCacheContractCoverage,createImpact,defineQueries,applyCacheInvalidations,describeQueries,postgresAdapter.postgresAdapter,pgAdapter,sqliteAdapter]) {
+for (const value of [calculateImpact,createImpact,defineQueries,describeQueries,postgresAdapter.postgresAdapter,pgAdapter,sqliteAdapter]) {
   if (typeof value !== 'function') throw new Error('MISSING_PUBLIC_API');
 }
 function resultTypes(nodePg:PgCommandDb,postgresJs:postgresAdapter.PostgresCommandDb,sqlite:SqliteCommandDb) {
@@ -130,36 +116,15 @@ function resultTypes(nodePg:PgCommandDb,postgresJs:postgresAdapter.PostgresComma
 void resultTypes;
 const memory = new DatabaseSync(':memory:');
 memory.exec('create table items(id integer primary key)');
-const cacheContract = defineCacheContract({id:'pack-command',version:1,queries:[{
-  operationId:'detail',endpoint:'items.detail',kind:'query',
-  input:{id:{type:'number',required:true}},
-  key:{prefix:['items'],path:['id']},fallback:['items'],
-}]});
 const engine = createImpact({
   adapter:sqliteAdapter({database:memory}),
   resources:{items:{schema:'main',table:'items',idColumn:'id',scopeColumn:null,columns:['id']}},
   queries:defineQueries({'items.detail':{input:{parse:(value:unknown)=>value},plan:q.select('items',{where:[q.eq('id',q.input('id'))]})}}),
-  cacheContracts:[cacheContract],
 });
 const logical = await engine.command({scope:null},async db => {
   await db.execute('insert into items(id) values(?)',[1]);return {id:1};
 });
-if ('cacheInvalidation' in logical || 'commandWithInvalidations' in engine) throw new Error('COMMAND_API_NOT_UNIFIED');
-// @ts-expect-error Two-argument command retains the logical-only return type.
-void logical.cacheInvalidation;
-const cached = await engine.command({scope:null},async db => {
-  await db.execute('insert into items(id) values(?)',[2]);return {id:2};
-},{cacheContract:{id:'pack-command',version:1}});
-const savedId:number = cached.data.id;
-if(savedId!==2 || !cached.cacheInvalidation.invalidations.some(value => value.exact && JSON.stringify(value.queryKey)==='["items",2]')) throw new Error('COMMAND_CACHE_OUTPUT_FAILED');
-function dynamicOptions(options?:CommandOptions) {
-  return engine.command({scope:null},async () => 42,options).then(result => {
-    const data:number=result.data;
-    if ('cacheInvalidation' in result) {const version:number=result.cacheInvalidation.contractVersion;void version;}
-    return data;
-  });
-}
-void dynamicOptions;
+if(logical.data.id!==1 || logical.impact.protocolVersion!==1) throw new Error('COMMAND_OUTPUT_FAILED');
 memory.close();
 for (const path of ['@server-driven-impact/runtime/query','@server-driven-impact/postgres/dist/postgres/index.js','@server-driven-impact/core/contracts']) {
   try { await import(path); throw new Error('INTERNAL_SUBPATH_EXPOSED:'+path); }
@@ -217,13 +182,8 @@ for (const directory of packageDirectories) {
 }
 if (Object.keys(manifests['@server-driven-impact/core'].dependencies).length)
   throw new Error('CORE_HAS_RUNTIME_DEPENDENCIES');
-if (
-  Object.keys(manifests['@server-driven-impact/runtime'].dependencies).sort().join(',') !==
-  '@server-driven-impact/cache-contract,@server-driven-impact/core'
-)
+if (Object.keys(manifests['@server-driven-impact/runtime'].dependencies).join(',') !== '@server-driven-impact/core')
   throw new Error('RUNTIME_DEPENDENCY_LEAK');
-if (!manifests['@server-driven-impact/tanstack-query'].peerDependencies['@tanstack/query-core'])
-  throw new Error('TANSTACK_QUERY_PEER_REQUIRED');
 for (const [name, manifest] of Object.entries(manifests)) {
   for (const [dependency, range] of Object.entries({ ...manifest.dependencies, ...manifest.peerDependencies })) {
     if (dependency.startsWith('@server-driven-impact/') && ![releaseVersion, '^' + releaseVersion].includes(range)) {
@@ -328,67 +288,9 @@ await isolatedConsumer(
   'core.js',
 );
 await isolatedConsumer(
-  'cache-contract-only',
-  {
-    '@server-driven-impact/core': archives['sdi-core'],
-    '@server-driven-impact/cache-contract': archives['sdi-cache-contract'],
-  },
-  {
-    'cache.ts': `import {defineCacheContract,buildQueryKey} from '@server-driven-impact/cache-contract'; const contract=defineCacheContract({id:'pack',version:1,queries:[{operationId:'get',endpoint:'items.detail',kind:'query',input:{id:{type:'string',required:true}},key:{prefix:['items'],path:['id']},fallback:['items']}]}); if(buildQueryKey(contract,'get',{id:'one'}).join(':')!=='items:one')throw new Error('CACHE_CONTRACT_IMPORT_FAILED'); console.log('cache-contract-only-ok');`,
-  },
-  'cache.js',
-);
-await isolatedConsumer(
-  'tanstack-query-only',
-  {
-    '@server-driven-impact/core': archives['sdi-core'],
-    '@server-driven-impact/cache-contract': archives['sdi-cache-contract'],
-    '@server-driven-impact/tanstack-query': archives['sdi-tanstack-query'],
-    '@tanstack/query-core': '5.102.8',
-  },
-  {
-    'tanstack.ts': `import {QueryClient} from '@tanstack/query-core'; import {applyCacheInvalidations} from '@server-driven-impact/tanstack-query'; const client=new QueryClient(); client.setQueryData(['items','one'],1); await applyCacheInvalidations(client,{protocolVersion:1,contractId:'pack',contractVersion:1,scope:'tenant',invalidations:[{queryKey:['items','one'],exact:true}]},{contract:{id:'pack',version:1},scope:'tenant'}); if(!client.getQueryState(['items','one'])?.isInvalidated)throw new Error('TANSTACK_IMPORT_FAILED'); console.log('tanstack-query-only-ok');`,
-  },
-  'tanstack.js',
-);
-const browserConsumer = await isolatedConsumer(
-  'browser-types',
-  {
-    '@server-driven-impact/core': archives['sdi-core'],
-    '@server-driven-impact/cache-contract': archives['sdi-cache-contract'],
-    '@server-driven-impact/tanstack-query': archives['sdi-tanstack-query'],
-    '@tanstack/query-core': '5.100.14',
-  },
-  {
-    'browser.ts': `import {QueryClient} from '@tanstack/query-core';
-import {defineCacheContract,prepareCacheQuery,compileCacheInvalidations} from '@server-driven-impact/cache-contract';
-import {applyCacheInvalidations} from '@server-driven-impact/tanstack-query';
-const contract=defineCacheContract({id:'browser',version:1,queries:[{
- operationId:'read',endpoint:'items',kind:'query',
- input:{ids:{type:'array',items:{type:'string'},required:true}},
- key:{template:{kind:'array',items:[{kind:'literal',value:['rpc','items']},{kind:'object',fields:{input:{kind:'inputs'},type:{kind:'literal',value:'query'}}}]}},
- fallback:[['rpc','items']]
-}]});
-const prepared=prepareCacheQuery(contract,'read',{ids:['b','a']});
-const client=new QueryClient();client.setQueryData(prepared.queryKey,1);
-await applyCacheInvalidations(client,compileCacheInvalidations(contract,{protocolVersion:1,targets:[{endpoint:'items',scope:'caller',selector:{kind:'all'}}]},'tenant'),{contract,scope:'tenant',cancelInFlight:true});
-if(!client.getQueryState(prepared.queryKey)?.isInvalidated)throw new Error('BROWSER_CONSUMER_FAILED');
-client.clear();console.log('browser-types-and-tanstack-minimum-ok');`,
-  },
-  'browser.js',
-  { types: [], lib: ['ES2022', 'DOM'], module: 'ESNext', moduleResolution: 'Bundler' },
-);
-await assertNotInstalled(browserConsumer, [
-  '@server-driven-impact/runtime',
-  '@server-driven-impact/postgres',
-  '@server-driven-impact/sqlite',
-  '@pgsql/parser',
-]);
-await isolatedConsumer(
   'runtime-only',
   {
     '@server-driven-impact/core': archives['sdi-core'],
-    '@server-driven-impact/cache-contract': archives['sdi-cache-contract'],
     '@server-driven-impact/runtime': archives['sdi-runtime'],
   },
   {
@@ -400,7 +302,6 @@ const sqliteOnly = await isolatedConsumer(
   'sqlite-only',
   {
     '@server-driven-impact/core': archives['sdi-core'],
-    '@server-driven-impact/cache-contract': archives['sdi-cache-contract'],
     '@server-driven-impact/runtime': archives['sdi-runtime'],
     '@server-driven-impact/sqlite': archives['sdi-sqlite'],
   },
@@ -422,7 +323,6 @@ await isolatedConsumer(
   'postgres-js-only',
   {
     '@server-driven-impact/core': archives['sdi-core'],
-    '@server-driven-impact/cache-contract': archives['sdi-cache-contract'],
     '@server-driven-impact/runtime': archives['sdi-runtime'],
     '@server-driven-impact/postgres': archives['sdi-postgres'],
     postgres: '3.4.8',
@@ -436,7 +336,6 @@ await isolatedConsumer(
   'pg-only',
   {
     '@server-driven-impact/core': archives['sdi-core'],
-    '@server-driven-impact/cache-contract': archives['sdi-cache-contract'],
     '@server-driven-impact/runtime': archives['sdi-runtime'],
     '@server-driven-impact/postgres': archives['sdi-postgres'],
     pg: '8.16.3',
@@ -455,7 +354,6 @@ await isolatedConsumer(
   'drizzle-pg-only',
   {
     '@server-driven-impact/core': archives['sdi-core'],
-    '@server-driven-impact/cache-contract': archives['sdi-cache-contract'],
     '@server-driven-impact/runtime': archives['sdi-runtime'],
     '@server-driven-impact/postgres': archives['sdi-postgres'],
     pg: '8.16.3',
@@ -488,7 +386,6 @@ await isolatedConsumer(
   'prisma-pg-only',
   {
     '@server-driven-impact/core': archives['sdi-core'],
-    '@server-driven-impact/cache-contract': archives['sdi-cache-contract'],
     '@server-driven-impact/runtime': archives['sdi-runtime'],
     '@server-driven-impact/postgres': archives['sdi-postgres'],
     pg: '8.16.3',

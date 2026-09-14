@@ -56,13 +56,11 @@ OLD와 NEW를 함께 보는 것이 중요합니다. 값이 `old`에서 `new`로 
 | 패키지 | 역할 |
 | --- | --- |
 | [`@server-driven-impact/core`](./packages/sdi-core/README.ko.md) | DB 중립 계약과 순수 `ImpactSet` 계산 |
-| [`@server-driven-impact/cache-contract`](./packages/sdi-cache-contract/README.ko.md) | 버전된 캐시 키 계약, OpenAPI 메타데이터, 무효화 변환 |
 | [`@server-driven-impact/runtime`](./packages/sdi-runtime/README.ko.md) | Query/Command 실행 경계와 adapter 계약 |
 | [`@server-driven-impact/postgres`](./packages/sdi-postgres/README.ko.md) | postgres.js와 node-postgres용 PostgreSQL adapter |
 | [`@server-driven-impact/sqlite`](./packages/sdi-sqlite/README.ko.md) | Node 동기 SQLite 드라이버용 adapter |
-| [`@server-driven-impact/tanstack-query`](./packages/sdi-tanstack-query/README.ko.md) | 브라우저 안전 TanStack Query 무효화 실행부 |
 
-하나의 계산 모델은 공통 패키지에 두고 transaction과 쓰기 관찰은 DB별 adapter가 담당합니다. 애플리케이션은 논리적 `ImpactSet`을 계속 직접 소비하거나 버전된 캐시 계약과 TanStack Query 실행부를 선택적으로 사용할 수 있습니다.
+하나의 계산 모델은 공통 패키지에 두고 transaction과 쓰기 관찰은 DB별 adapter가 담당합니다. 애플리케이션은 논리적 `ImpactSet`을 자체 전송 형식과 프론트 캐시 동작으로 변환합니다.
 
 ## SQLite로 시작하기
 
@@ -169,6 +167,8 @@ Resource는 애플리케이션의 이름을 DB relation에 연결합니다. `idC
 
 `input`에는 `parse(value)`를 가진 객체나 zod, valibot 같은 [Standard Schema](https://standardschema.dev) v1 스키마를 그대로 넣을 수 있습니다. `engine.query()`는 입력 타입을 그 스키마에서, 반환 타입을 plan에서 추론합니다. `q.select<Row>()`는 `Row[]`, `q.count()`는 `number`를 돌려주고, `q.call<O>()`는 `O`를 돌려주지만 타입 인자를 명시하지 않으면 `unknown`이 기본값이며, `q.map`, `q.combine`, `q.when`, `q.choose`는 콜백과 자식 plan의 타입을 따릅니다.
 
+selector에 연결된 입력은 기본적으로 `inputRelation: 'preserve'`입니다. ImpactSet selector가 호출자의 입력을 나타내므로 파싱 전후의 scalar 값이 같아야 합니다. 정규화를 서버만 알게 하려면 `inputRelation: 'opaque'`를 선언합니다. SDI는 해당 endpoint의 입력 binding을 제거하고 impact selector를 안전하게 `all`로 넓힙니다.
+
 ### Commands와 WriteFacts
 
 `engine.command()`는 쓰기 추적 경계입니다. adapter는 콜백을 자신의 transaction 안에서 실행하고 insert, update, delete, trigger, 지원되는 cascade에서 `WriteFact`를 기록합니다. rollback은 성공한 impact를 만들지 않으며 rollback된 savepoint의 쓰기는 버립니다.
@@ -212,10 +212,12 @@ SDI는 지원되는 작업이 SDI engine과 adapter가 소유한 transaction을 
 
 ## 커밋 결과 오류
 
-- `ImpactUnavailableError`는 DB 커밋은 성공했지만 영향 계산 또는 캐시 지시 생성에 실패했다는 뜻입니다. `data`는 항상 업무 결과이고 `commitState`는 `committed`입니다. `phase`로 실패 단계를 구분하며, 영향 계산에 성공했다면 `impact`도 제공합니다.
+- `ImpactUnavailableError`는 DB 커밋은 성공했지만 영향 계산에 실패했다는 뜻입니다. `data`는 커밋된 업무 결과이고 `commitState`는 `committed`입니다.
 - `CommitStateUnknownError`는 클라이언트가 커밋 성공 여부를 알 수 없다는 뜻입니다. 멱등성이 없는 Command를 무조건 재시도하면 안 됩니다.
 
 이 오류를 애플리케이션 프로토콜로 변환할 때는 `isCommitOutcomeError()`를 사용할 수 있습니다. SDI는 HTTP envelope, 재시도 정책, idempotency key, durable outbox 형식을 정하지 않습니다.
+
+삭제된 캐시 패키지와 서버 입력 정규화 방식은 [impact-only 전환 가이드](./docs/migrations/impact-only-0.5.md)를 참고하세요.
 
 ## 개발
 

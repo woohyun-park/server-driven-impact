@@ -15,11 +15,9 @@ if (channel === 'latest' && release.version.includes('-')) throw new Error('PRER
 
 const packages = [
   ['sdi-core', '@server-driven-impact/core'],
-  ['sdi-cache-contract', '@server-driven-impact/cache-contract'],
   ['sdi-runtime', '@server-driven-impact/runtime'],
   ['sdi-postgres', '@server-driven-impact/postgres'],
   ['sdi-sqlite', '@server-driven-impact/sqlite'],
-  ['sdi-tanstack-query', '@server-driven-impact/tanstack-query'],
 ];
 
 function npm(args, options = {}) {

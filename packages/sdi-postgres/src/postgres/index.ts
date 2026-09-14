@@ -4,11 +4,9 @@ import type { WriteSet } from '@server-driven-impact/core';
 import { canonical, type Scalar } from '@server-driven-impact/core';
 import {
   bindAdapter,
-  verifiedStringComparisons,
   type ImpactAdapter,
   type QueryManifest,
   type Resources,
-  type VerifiedStringComparison,
 } from '@server-driven-impact/runtime/adapter';
 import type { ExecutableQueryPlan, Input } from '@server-driven-impact/runtime';
 import { TrackedDb, type PostgresExecuteResult, type Transaction } from './tracked-db.js';
@@ -143,7 +141,6 @@ export function postgresAdapter<T extends Record<string, unknown>>(
     [bindAdapter](resources: Resources, manifest: QueryManifest) {
       let quarantined = false;
       let equalityResources: ReadonlySet<string> = new Set();
-      let stringComparisons: readonly VerifiedStringComparison[] = [];
       const reserve = async () => {
         if (quarantined) throw new Error('POSTGRES_SESSION_QUARANTINED');
         return options.database.reserve();
@@ -154,8 +151,7 @@ export function postgresAdapter<T extends Record<string, unknown>>(
       const fingerprint = observerFingerprint(resources, manifest);
       const layout = observerLayout(fingerprint);
       const performValidation = async (database: Transaction) => {
-        const exactStringColumns = new Set<string>();
-        const validatedEqualityResources = await validateCatalog(database, resources, manifest, exactStringColumns);
+        const validatedEqualityResources = await validateCatalog(database, resources, manifest);
         const rows = await database.unsafe(
           `select fingerprint,definition_hashes from ${layout.internalSchema}.${layout.metadataTable} where singleton=true`,
         );
@@ -230,9 +226,6 @@ export function postgresAdapter<T extends Record<string, unknown>>(
         if (canonical(Object.keys(definitionHashes).sort()) !== canonical(expectedFunctions))
           throw new Error('OBSERVER_DEFINITION_SET_MISMATCH');
         equalityResources = validatedEqualityResources;
-        stringComparisons = verifiedStringComparisons(manifest, (resource, column) =>
-          exactStringColumns.has(canonical([resource, column])),
-        );
       };
       const readTransaction = async <V>(work: (transaction: Transaction) => Promise<V>): Promise<V> => {
         const session = await reserve();
@@ -253,14 +246,10 @@ export function postgresAdapter<T extends Record<string, unknown>>(
           await release(session, broken);
         }
       };
-      const validate = () => {
-        stringComparisons = [];
-        return readTransaction(performValidation);
-      };
+      const validate = () => readTransaction(performValidation);
       return {
         artifact: fingerprint,
         validate,
-        verifiedStringComparisons: () => stringComparisons,
         async query<V>(
           scope: Scalar,
           work: (select: (plan: ExecutableQueryPlan, input: Input) => Promise<unknown[]>) => Promise<V>,

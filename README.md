@@ -56,13 +56,11 @@ Using both OLD and NEW values matters. A row moved from `old` to `new` can make 
 | Package | Responsibility |
 | --- | --- |
 | [`@server-driven-impact/core`](./packages/sdi-core) | Database-neutral contracts and pure `ImpactSet` calculation |
-| [`@server-driven-impact/cache-contract`](./packages/sdi-cache-contract) | Versioned cache-key contracts, OpenAPI metadata, and invalidation compilation |
 | [`@server-driven-impact/runtime`](./packages/sdi-runtime) | Query/Command execution boundary and adapter contract |
 | [`@server-driven-impact/postgres`](./packages/sdi-postgres) | PostgreSQL adapter for postgres.js and node-postgres |
 | [`@server-driven-impact/sqlite`](./packages/sdi-sqlite) | SQLite adapter for Node's synchronous SQLite driver |
-| [`@server-driven-impact/tanstack-query`](./packages/sdi-tanstack-query) | Browser-safe TanStack Query invalidation executor |
 
-The packages keep one calculation model while leaving transaction and observation details to each database adapter. Applications may consume logical `ImpactSet` values directly or opt into a versioned cache contract and the TanStack Query executor.
+The packages keep one calculation model while leaving transaction and observation details to each database adapter. Applications translate logical `ImpactSet` values into their own transport and client-cache operations.
 
 ## Quick start with SQLite
 
@@ -169,6 +167,8 @@ A Resource maps an application name to a database relation. `idColumn` identifie
 
 `input` accepts any object with `parse(value)` or any [Standard Schema](https://standardschema.dev) v1 schema such as zod or valibot. `engine.query()` infers its input type from that schema and its return type from the plan: `q.select<Row>()` returns `Row[]`, `q.count()` returns `number`, `q.call<O>()` returns `O` but defaults to `unknown` unless given an explicit type argument, and `q.map`, `q.combine`, `q.when`, `q.choose` follow their callbacks and children.
 
+Selector-bound inputs default to `inputRelation: 'preserve'`. Their parsed scalar values must equal the raw values, because the ImpactSet selector describes the caller's input. Set `inputRelation: 'opaque'` when normalization belongs only on the server. SDI then removes input bindings for that endpoint and safely widens its impact selector to `all`.
+
 ### Commands and WriteFacts
 
 `engine.command()` is the tracked write boundary. The adapter executes the callback inside its transaction and records `WriteFact` values for inserts, updates, deletes, triggers, and supported cascades. Rollback produces no successful impact result; rolled-back savepoint writes are discarded.
@@ -212,12 +212,12 @@ The library deliberately fails or widens when it cannot prove a narrow result. D
 
 ## Commit outcome errors
 
-- `ImpactUnavailableError` means the database committed but impact calculation or cache-invalidation compilation failed. `data` is always the business result, `commitState` is `committed`, `phase` identifies the failed stage, and `impact` is available if already calculated.
+- `ImpactUnavailableError` means the database committed but impact calculation failed. `data` is the committed business result and `commitState` is `committed`.
 - `CommitStateUnknownError` means the client cannot determine whether the commit succeeded. Do not blindly retry a non-idempotent Command.
 
 Use `isCommitOutcomeError()` when mapping these cases into an application protocol. SDI does not impose an HTTP envelope, retry policy, idempotency key, or durable outbox.
 
-See the [cache-contract migration guide](./docs/migrations/cache-contract-0.5.md) for existing RPC keys, structured inputs, coverage, post-commit errors, and local prerelease installation.
+See the [impact-only migration guide](./docs/migrations/impact-only-0.5.md) for the removed cache packages and server-side input normalization.
 
 ## Development
 

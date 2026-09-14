@@ -118,19 +118,12 @@ describe.skipIf(!enabled)('orders domain / real PostgreSQL conformance', () => {
     const exact = {
       value: { schema, table: 'exact_strings', idColumn: 'id', scopeColumn: null, columns: ['id', 'value'] },
     };
-    const exactColumns = new Set<string>();
     await expect(
-      validateCatalog(
-        admin,
-        exact,
-        {
-          protocolVersion: 1,
-          reads: { byValue: [{ resource: 'value', columns: '*', bindings: [{ column: 'value', input: 'value' }] }] },
-        },
-        exactColumns,
-      ),
+      validateCatalog(admin, exact, {
+        protocolVersion: 1,
+        reads: { byValue: [{ resource: 'value', columns: '*', bindings: [{ column: 'value', input: 'value' }] }] },
+      }),
     ).resolves.toBeDefined();
-    expect(exactColumns).toEqual(new Set([canonical(['value', 'id']), canonical(['value', 'value'])]));
     await admin.unsafe(`create collation "${schema}".folded (provider=icu,locale='und-u-ks-level2',deterministic=false);
       create table "${schema}".collated(id text primary key,value text collate "${schema}".folded)`);
     const collated = {

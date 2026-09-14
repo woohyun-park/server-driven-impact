@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.0-impact.0
+
+- Remove cache-specific string-comparison proof plumbing from the adapter contract.
+
 ## 0.4.1
 
 - Select RLS dependencies by read command and optional effective runtime role; exclude write-only policies and WITH CHECK from SELECT analysis.

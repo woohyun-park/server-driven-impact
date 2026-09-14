@@ -1,6 +1,6 @@
 {
   "name": "@server-driven-impact/core",
-  "version": "0.5.0-cache-contract.2",
+  "version": "0.5.0-impact.0",
   "description": "Database-neutral impact calculation from observed writes.",
   "type": "module",
   "license": "MIT",

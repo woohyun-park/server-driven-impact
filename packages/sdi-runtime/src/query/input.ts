@@ -32,20 +32,38 @@ export type ParsedInputOf<S> =
  */
 export type QueryInput<S> = Input extends InputOf<S> ? object : InputOf<S>;
 
+export type InputSnapshot = {
+  object: boolean;
+  fields: Readonly<Record<string, { present: boolean; value?: unknown }>>;
+};
+
+/** Capture selector inputs before a parser can mutate the caller-owned object. */
+export function snapshotInput(raw: unknown, fields: readonly string[]): InputSnapshot {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { object: false, fields: {} };
+  return {
+    object: true,
+    fields: Object.fromEntries(
+      fields.map(field => {
+        const present = Object.hasOwn(raw, field);
+        return [field, present ? { present, value: (raw as Record<string, unknown>)[field] } : { present }];
+      }),
+    ),
+  };
+}
+
 /**
- * The impact selector and the cache key both carry the value the caller supplied, while the SQL runs
- * on the parsed value. A schema that rewrites one of those fields makes the two disagree, so a later
- * write to the row the query actually read would not match the cached entry. Compare the two for the
- * fields whose exact string comparison the adapter proved, and refuse rather than miss the invalidation.
+ * The impact selector carries the value the caller supplied, while SQL runs on the parsed value. A
+ * schema that rewrites one of those fields makes the dependency disagree with the row actually read.
+ * Refuse that mismatch rather than return an ImpactSet that can miss the affected query.
  */
-export function assertInputPreserved(raw: unknown, parsed: object, fields: readonly string[]): void {
+export function assertInputPreserved(snapshot: InputSnapshot, parsed: object, fields: readonly string[]): void {
   if (!fields.length) return;
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('QUERY_INPUT_PRESERVATION_VIOLATION');
+  if (!snapshot.object) throw new Error('QUERY_INPUT_PRESERVATION_VIOLATION');
   for (const field of fields) {
+    const before = snapshot.fields[field] ?? { present: false };
     if (
-      Object.hasOwn(raw, field) !== Object.hasOwn(parsed, field) ||
-      (Object.hasOwn(raw, field) &&
-        (raw as Record<string, unknown>)[field] !== (parsed as Record<string, unknown>)[field])
+      before.present !== Object.hasOwn(parsed, field) ||
+      (before.present && before.value !== (parsed as Record<string, unknown>)[field])
     )
       throw new Error('QUERY_INPUT_PRESERVATION_VIOLATION:' + field);
   }

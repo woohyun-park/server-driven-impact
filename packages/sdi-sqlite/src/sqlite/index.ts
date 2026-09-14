@@ -4,12 +4,10 @@ import { LIMITS, canonical, isScalar, type Scalar, type WriteFact, type RowState
 import {
   bindAdapter,
   identityColumns,
-  verifiedStringComparisons,
   type ImpactAdapter,
   type QueryManifest,
   type Resources,
   type SelectExecutor,
-  type VerifiedStringComparison,
 } from '@server-driven-impact/runtime/adapter';
 import { guardDatabase } from '@server-driven-impact/runtime/adapter';
 import type { Input } from '@server-driven-impact/runtime';
@@ -126,8 +124,7 @@ function value(input: unknown): SQLInputValue {
 function bindings(values: unknown[]): Record<string, SQLInputValue> {
   return Object.fromEntries(values.map((v, i) => [String(i + 1), value(v)]));
 }
-function validateCatalog(database: DatabaseSync, resources: Resources): ReadonlySet<string> {
-  const exactStringColumns = new Set<string>();
+function validateCatalog(database: DatabaseSync, resources: Resources): void {
   if (!database.prepare('pragma foreign_keys').get()?.foreign_keys) throw new Error('SQLITE_FOREIGN_KEYS_REQUIRED');
   for (const [id, resource] of Object.entries(resources)) {
     if (resource.schema && resource.schema !== 'main') throw new Error('SQLITE_MAIN_SCHEMA_ONLY');
@@ -156,14 +153,7 @@ function validateCatalog(database: DatabaseSync, resources: Resources): Readonly
       throw new Error('COLUMN_DRIFT:' + id);
     if (columns.some(c => !['TEXT', 'INTEGER', 'REAL'].includes(String(c.type).toUpperCase())))
       throw new Error('SQLITE_UNSUPPORTED_COLUMN_TYPE:' + id);
-    // Structured selects do not emit an explicit COLLATE clause. If the table has
-    // any non-BINARY declaration, stay broad until column-level parsing is proven.
-    if (!collations.some(name => name !== 'BINARY'))
-      for (const column of columns) {
-        if (String(column.type).toUpperCase() === 'TEXT') exactStringColumns.add(canonical([id, String(column.name)]));
-      }
   }
-  return exactStringColumns;
 }
 
 const collectorTable = 'sdi_observed_facts';
@@ -346,7 +336,6 @@ export function sqliteAdapter(options: SqliteOptions): ImpactAdapter<SqliteComma
   return Object.freeze({
     [bindAdapter](resources: Resources, manifest: QueryManifest) {
       let comparisonsValidated = false;
-      let stringComparisons: readonly VerifiedStringComparison[] = [];
       const key = canonical({ resources, reads: manifest.reads });
       const prepare = (force = false) => {
         if (!force && activeObservers.get(database)?.key === key) return;
@@ -359,12 +348,8 @@ export function sqliteAdapter(options: SqliteOptions): ImpactAdapter<SqliteComma
       const validate = () =>
         serial(database, async () => {
           comparisonsValidated = false;
-          stringComparisons = [];
-          const exactStringColumns = validateCatalog(database, resources);
+          validateCatalog(database, resources);
           prepare(true);
-          stringComparisons = verifiedStringComparisons(manifest, (resource, column) =>
-            exactStringColumns.has(canonical([resource, column])),
-          );
           comparisonsValidated = true;
         });
       const select: SelectExecutor = async (plan, input: Input) => {
@@ -423,7 +408,6 @@ export function sqliteAdapter(options: SqliteOptions): ImpactAdapter<SqliteComma
       }
       return {
         validate,
-        verifiedStringComparisons: () => stringComparisons,
         query: <T>(_scope: Scalar, work: (execute: SelectExecutor) => Promise<T>) =>
           transaction(true, () => work(select)),
         command: <T>(_scope: Scalar, writes: WriteSet, work: (db: SqliteCommandDb) => Promise<T>) =>

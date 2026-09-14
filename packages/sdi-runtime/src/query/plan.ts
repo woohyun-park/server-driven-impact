@@ -8,7 +8,7 @@ import {
   type ReadDependency,
 } from '@server-driven-impact/core';
 import { validateResources, type Resources } from '../resources.js';
-import { assertInputPreserved, type Input, type InputParser, type InputSchema } from './input.js';
+import { assertInputPreserved, snapshotInput, type Input, type InputParser, type InputSchema } from './input.js';
 export type { Input } from './input.js';
 type ResourceId = string;
 export type { ReadDependency } from '@server-driven-impact/core';
@@ -42,7 +42,7 @@ export function validateManifest(manifest: QueryManifest, resources: Resources):
  *
  * The key must stay the string `'~output'`. A `unique symbol` would need to be declared and, because
  * these packages build with `declaration: true`, a non-exported symbol cannot be named in the emitted
- * `.d.ts` — swapping the string for a symbol breaks declaration emit for all six packages.
+ * `.d.ts` — swapping the string for a symbol breaks declaration emit across the package set.
  */
 export type Typed<O> = { readonly '~output'?: O };
 /** The result type a plan produces when executed; `unknown` for anything that carries no phantom. */
@@ -107,9 +107,13 @@ export type Plan<O = unknown> =
 export type QueryDefinition<
   S extends InputSchema<unknown, unknown> = InputSchema<unknown, unknown>,
   P extends Plan<unknown> = Plan<unknown>,
-> = { input: S; plan: P };
+> = { input: S; inputRelation?: 'preserve' | 'opaque'; plan: P };
 /** A definition after `createImpact` has normalized either input style into one `{ parse }`. */
-export type NormalizedQuery = { input: InputParser<unknown>; plan: Plan };
+export type NormalizedQuery = {
+  input: InputParser<unknown>;
+  inputRelation: 'preserve' | 'opaque';
+  plan: Plan;
+};
 export type Manifest = QueryManifest & { sources: Record<string, string[]>; dependents: Record<string, string[]> };
 
 /** A no-store child makes the entire composed endpoint non-cacheable. */
@@ -336,8 +340,12 @@ export function compileManifest(queries: Record<string, QueryDefinition>, resour
       case 'value':
         return [];
       // Arbitrary input mapping cannot be inverted safely. Retain columns, widen inputs.
-      case 'call':
-        return readsFor(queries[plan.endpoint].plan).map(r => (plan.input ? { ...r, bindings: [] } : r));
+      case 'call': {
+        const query = queries[plan.endpoint];
+        return readsFor(query.plan).map(r =>
+          plan.input || query.inputRelation === 'opaque' ? { ...r, bindings: [] } : r,
+        );
+      }
       case 'bind':
         return [...readsFor(plan.parent), ...readsFor(plan.child).map(r => ({ ...r, bindings: [] }))];
       case 'map':
@@ -350,7 +358,14 @@ export function compileManifest(queries: Record<string, QueryDefinition>, resour
         return Object.values(plan.choices).flatMap(readsFor);
     }
   }
-  const reads = Object.fromEntries(Object.keys(sortedSources).map(id => [id, readsFor(queries[id].plan)]));
+  const reads = Object.fromEntries(
+    Object.keys(sortedSources).map(id => [
+      id,
+      readsFor(queries[id].plan).map(read =>
+        queries[id].inputRelation === 'opaque' ? { ...read, bindings: [] } : read,
+      ),
+    ]),
+  );
   // Selectors/column policies affect consistency too, so changes retire the previous graph.
   const manifest: Manifest = { protocolVersion: 1, sources: sortedSources, dependents, reads };
   if (nativePlans.length) {
@@ -421,20 +436,19 @@ export async function executePlan(
   queries: Record<string, NormalizedQuery>,
   execute: (plan: ExecutableQueryPlan, input: Input) => Promise<unknown[]>,
   resources: Resources,
-  exactStringInputs: (endpoint: string) => readonly string[],
+  preservedInputs: (endpoint: string) => readonly string[],
   /**
-   * Exact-string fields carried from the endpoint the caller actually requested, or `null` once an
-   * ancestor has widened the path. The cache key is built from the contract on the requested endpoint,
-   * so every hop that still receives the caller's own input must preserve these fields, whether or not
-   * a contract happens to name the hop as well.
+   * Selector fields carried from the endpoint the caller actually requested, or `null` once an
+   * ancestor has widened the path. Every hop that still receives the caller's own input must preserve
+   * these fields so the dependency describes the rows that SQL actually read.
    *
    * `null` and `[]` are deliberately different: `null` means an ancestor already widened this endpoint's
    * bindings, so nothing below it can desynchronize a selector and no hop may reintroduce a check from
-   * its own declarations; `[]` means the path is still the caller's but nothing has been declared on it
+   * its own declarations; `[]` means the path is still the caller's but nothing has been bound on it
    * yet, so a callee's own declarations still apply. Collapsing the two is what let a widened path be
    * re-checked by a contract that named only the callee.
    */
-  requiredStringInputs: readonly string[] | null,
+  requiredInputs: readonly string[] | null,
 ): Promise<unknown> {
   switch (plan.kind) {
     case 'select': {
@@ -449,35 +463,26 @@ export async function executePlan(
       if (!Object.hasOwn(queries, plan.endpoint)) throw new Error(`Query missing: ${plan.endpoint}`);
       const query = queries[plan.endpoint];
       const raw = plan.input ? plan.input(input) : input;
+      const calleeInputs = preservedInputs(plan.endpoint);
+      const fields = requiredInputs ? [...new Set([...requiredInputs, ...calleeInputs])] : [];
+      const before = snapshotInput(raw, fields);
       const parsed = await query.input.parse(raw);
       if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('INVALID_QUERY_INPUT');
       // An input mapper ends the identity chain: `readsFor` drops this endpoint's bindings, so impact
-      // has already widened and nothing below has to reproduce the caller's exact string. A path an
-      // ancestor already widened stays widened, whatever this callee's own contracts declare.
+      // has already widened and nothing below has to reproduce the caller's selector values. A path an
+      // ancestor already widened stays widened, whatever this callee's own bindings declare.
       let carried: readonly string[] | null = null;
-      if (!plan.input && requiredStringInputs) {
-        // The nested schema re-parses a value the caller's cache key already committed to, so it needs
-        // the same preservation check the top level applies. Both lists matter: a field declared only on
-        // the requested endpoint and one declared only on this callee each need preserving.
-        const callee = exactStringInputs(plan.endpoint);
-        carried = callee.length ? [...new Set([...requiredStringInputs, ...callee])] : requiredStringInputs;
-        assertInputPreserved(raw, parsed, carried);
+      if (!plan.input && query.inputRelation === 'preserve' && requiredInputs) {
+        carried = fields;
+        assertInputPreserved(before, parsed, carried);
       }
-      return executePlan(query.plan, parsed as Input, queries, execute, resources, exactStringInputs, carried);
+      return executePlan(query.plan, parsed as Input, queries, execute, resources, preservedInputs, carried);
     }
     case 'combine': {
       // One connection/snapshot; keep statements sequential rather than pretending parallel transactions.
       const data: Record<string, unknown> = {};
       for (const [key, child] of Object.entries(plan.children))
-        data[key] = await executePlan(
-          child,
-          input,
-          queries,
-          execute,
-          resources,
-          exactStringInputs,
-          requiredStringInputs,
-        );
+        data[key] = await executePlan(child, input, queries, execute, resources, preservedInputs, requiredInputs);
       return data;
     }
     case 'when':
@@ -487,41 +492,25 @@ export async function executePlan(
         queries,
         execute,
         resources,
-        exactStringInputs,
-        requiredStringInputs,
+        preservedInputs,
+        requiredInputs,
       );
     case 'bind': {
-      const data = await executePlan(
-        plan.parent,
-        input,
-        queries,
-        execute,
-        resources,
-        exactStringInputs,
-        requiredStringInputs,
-      );
+      const data = await executePlan(plan.parent, input, queries, execute, resources, preservedInputs, requiredInputs);
       const next = plan.input(data, input);
       // The child's input is derived, not the caller's, and `readsFor` already dropped its bindings, so
       // the calculator emits a value-independent selector for it and there is no key left to mismatch.
-      return next === null ? [] : executePlan(plan.child, next, queries, execute, resources, exactStringInputs, null);
+      return next === null ? [] : executePlan(plan.child, next, queries, execute, resources, preservedInputs, null);
     }
     case 'map':
       return plan.project(
-        await executePlan(plan.source, input, queries, execute, resources, exactStringInputs, requiredStringInputs),
+        await executePlan(plan.source, input, queries, execute, resources, preservedInputs, requiredInputs),
         input,
       );
     case 'choose': {
       const choice = plan.choose(input);
       if (!Object.hasOwn(plan.choices, choice)) throw new Error('Unregistered query choice');
-      return executePlan(
-        plan.choices[choice],
-        input,
-        queries,
-        execute,
-        resources,
-        exactStringInputs,
-        requiredStringInputs,
-      );
+      return executePlan(plan.choices[choice], input, queries, execute, resources, preservedInputs, requiredInputs);
     }
   }
 }

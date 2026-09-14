@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.0-impact.0
+
+- Remove cache-specific string-comparison proof plumbing from the adapter contract.
+
 ## 0.4.0
 
 - Expose synchronous prepare().run/get/all with native results and context lifetime checks.

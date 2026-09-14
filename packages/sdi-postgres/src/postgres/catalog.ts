@@ -41,7 +41,6 @@ export async function validateCatalog(
   database: Transaction,
   resources: Resources,
   manifest?: QueryManifest,
-  exactStringColumns?: Set<string>,
 ): Promise<ReadonlySet<string>> {
   const equalityResources = new Set<string>();
   const unsafeEqualityResources = new Set<string>();
@@ -102,9 +101,6 @@ export async function validateCatalog(
       array(select a.attname::text from pg_attribute a where a.attrelid=c.oid and a.attnum>0 and not a.attisdropped order by a.attname) as columns,
       array(select a.attname::text from pg_attribute a join pg_collation coll on coll.oid=a.attcollation
         where a.attrelid=c.oid and a.attnum>0 and not a.attisdropped and not coll.collisdeterministic order by a.attname) as nondeterministic_collations,
-      array(select a.attname::text from pg_attribute a join pg_type t on t.oid=a.atttypid left join pg_collation coll on coll.oid=a.attcollation
-        where a.attrelid=c.oid and a.attnum>0 and not a.attisdropped and t.typnamespace='pg_catalog'::regnamespace
-          and t.typname in ('text','varchar') and (a.attcollation=0 or coll.collisdeterministic) order by a.attname) as exact_string_columns,
       array(select a.attname::text from pg_index i cross join lateral unnest(i.indkey) k join pg_attribute a on a.attrelid=c.oid and a.attnum=k where i.indrelid=c.oid and i.indisprimary) as pk
       from pg_class c join pg_namespace n on n.oid=c.relnamespace where n.nspname=$1 and c.relname=$2`,
       [r.schema ?? 'public', r.table],
@@ -139,7 +135,6 @@ export async function validateCatalog(
       boundColumns.has(column),
     );
     if (unsupported) throw new Error(`UNSUPPORTED_SELECTOR_COLLATION:${id}:${unsupported}`);
-    for (const column of (row.exact_string_columns ?? []) as string[]) exactStringColumns?.add(canonical([id, column]));
     if (!row.relrowsecurity && !row.relhasrules) equalityResources.add(id);
     if (row.relrowsecurity) {
       const pending = Object.entries(manifest?.reads ?? {}).filter(

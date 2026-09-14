@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.0-impact.0
+
+- Focus the public protocol on logical ImpactSet calculation and simplify post-commit impact errors.
+
 ## 0.4.0
 
 - Keep resource-local WriteSet summaries and shared selector constraints within global budgets; widen individual targets on response overflow.

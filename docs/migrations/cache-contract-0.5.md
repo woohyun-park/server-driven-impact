@@ -1,5 +1,7 @@
 # 기존 캐시를 유지하는 server-owned 계약 전환
 
+> 이 문서는 폐기된 `cache-contract` prerelease의 기록입니다. 현재 전환 방법은 [impact-only 0.5 가이드](./impact-only-0.5.md)를 사용하세요.
+
 대상: `0.5.0-cache-contract.1`. 정식 npm 배포 전 로컬 검증용 prerelease다. 앱의 업무 API·화면·oRPC 사용 방식을 바꾸는 것이 아니라 서버 dispatch와 공통 캐시 consumer에 연결한다.
 
 ## 1. 같은 정의로 요청과 키 생성

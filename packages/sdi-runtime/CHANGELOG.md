@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.5.0-impact.0
+
+- Return only `{ data, impact }` from commands and remove cache-contract configuration.
+- Add preserve and opaque input relations for safe server-owned normalization.
+
 ## 0.4.1
 
 - Carry PostgreSQL policy proofs through composed Query manifests without suppressing validation of independent reads of the same resource.
