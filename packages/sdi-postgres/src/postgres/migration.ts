@@ -3,6 +3,7 @@ import type { QueryManifest, Resources } from '@server-driven-impact/runtime/ada
 import { resolvePostgresResources, validateCatalog } from './catalog.js';
 import { generateObserverMigration, observerFingerprint } from './observer.js';
 import type { Transaction } from './tracked-db.js';
+import { installPostgresTransactionGate, transactionGateExclusiveLockSql } from './transaction-gate.js';
 import {
   compilePostgresArtifacts,
   type PostgresArtifactOptions,
@@ -30,6 +31,8 @@ export async function migratePostgresArtifacts(
   if (manifest.postgres) throw new Error('NATIVE_QUERY_DEFINITIONS_REQUIRED_USE_MIGRATE_POSTGRES_QUERIES');
   return database.begin('isolation level read committed', async transaction => {
     await transaction.unsafe('select pg_advisory_xact_lock($1,$2)', [0x534449, 0x5047]);
+    await installPostgresTransactionGate(transaction, options.runtimeRole);
+    await transaction.unsafe(transactionGateExclusiveLockSql);
     await options.change?.(transaction);
     const resolved = await resolvePostgresResources(transaction, resources);
     await transaction.unsafe(generateObserverMigration(resolved, manifest, { runtimeRole: options.runtimeRole }));
@@ -57,6 +60,8 @@ export async function migratePostgresQueries(
   // granted. SERIALIZABLE could retain the pre-migration snapshot from the lock SELECT.
   return database.begin('isolation level read committed', async transaction => {
     await transaction.unsafe('select pg_advisory_xact_lock($1,$2)', [0x534449, 0x5047]);
+    await installPostgresTransactionGate(transaction, options.runtimeRole);
+    await transaction.unsafe(transactionGateExclusiveLockSql);
     await options.change?.(transaction);
     const artifact = await compilePostgresArtifacts(transaction, resources, definitions, options);
     await transaction.unsafe(

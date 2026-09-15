@@ -69,13 +69,34 @@ console.log(data.count); // postgres.js: number
 console.log(impact.targets);
 ```
 
-For `pgAdapter`, use `data.rowCount`; it remains `number | null` in TypeScript. The driver's processed-row count is the command tag's count, not the number of rows whose stored values changed. For example, updating one matching row to its existing value can report a count of `1` while `impact.targets` is empty because no observable row value changed. SQLSTATE and other execution failures remain driver error objects and are separate from successful execution results. The same result type is preserved through `savepoint()`, and a committed result is retained in `ImpactUnavailableError.data` if post-commit impact collection fails.
+For `pgAdapter`, use `data.rowCount`; it remains `number | null` in TypeScript. The driver's processed-row count is the command tag's count, not the number of rows whose stored values changed. For example, updating one matching row to its existing value can report a count of `1` while `impact.targets` is empty because no observable row value changed. SQLSTATE and other execution failures remain driver error objects and are separate from successful execution results. The same result type is preserved through `savepoint()`, and a committed result is retained in `ImpactUnavailableError.data` if post-commit impact conversion fails.
 
-The table must already exist, the runtime role must have its normal table privileges, and its row-level security policy must use the same scope established by `setup`. Generate and apply the observer migration with schema-owner credentials, then call `engine.validate()` at the application's startup, deployment, or health-check boundary. Normal Query and Command execution does not repeat full catalog validation.
+The table must already exist, the runtime role must have its normal table privileges, and its row-level security policy must use the same scope established by `setup`. Generate and apply the observer migration with schema-owner credentials, then call `engine.validate()` at the application's startup, deployment, or health-check boundary. The first Command on a bound adapter also performs and caches this validation so protocol 10 cannot run against a stale observer; later Query and Command execution does not repeat it.
 
-The conformance suite covers PostgreSQL 14–18 with postgres.js and pg. Transaction pooling, opaque dynamic SQL dependency inference, external I/O observation, autonomous procedures, held cursors, and two-phase commit are outside the atomic Command contract. The detailed contract is in the [PostgreSQL compatibility guide](https://github.com/woohyun-park/server-driven-impact/blob/main/spec/server-driven-impact/postgres-compatibility.md).
+The conformance suite covers PostgreSQL 14–18 with postgres.js and pg, plus PgBouncer transaction pooling. Opaque dynamic SQL dependency inference, external I/O observation, autonomous procedures, held cursors, and two-phase commit are outside the atomic Command contract. The detailed contract is in the [PostgreSQL compatibility guide](https://github.com/woohyun-park/server-driven-impact/blob/main/spec/server-driven-impact/postgres-compatibility.md).
 
-Node.js 22.18 or newer is required.
+## Transaction pooling
+
+Query, Command, and catalog validation all use one transaction-lifetime connection. Point the adapter at a PgBouncer or Supavisor transaction endpoint:
+
+```ts
+const database = postgres(process.env.SUPAVISOR_TRANSACTION_URL!, {
+  max: 1,
+  prepare: false,
+});
+
+const adapter = postgresAdapter({ database, setup });
+```
+
+`pgAdapter({ database: pool })`, `drizzleAdapter`, and `prismaAdapter` use the same contract. The removed `query`, `command`, and `connectionMode` options fail with `POSTGRES_CONNECTION_OPTIONS_REMOVED` instead of being ignored.
+
+Each operation starts a transaction and takes an ACCESS SHARE lock on the stable `sdi_control.transaction_gate` before application work. Migration helpers take the matching ACCESS EXCLUSIVE lock. `generateObserverMigration()` installs and exclusively locks the gate and grants access to the runtime role. Apply that SQL in one explicit migration transaction. `migratePostgresQueries()` and `migratePostgresArtifacts()` also serialize migration setup with a transaction-scoped advisory lock. A missing gate produces `POSTGRES_TRANSACTION_GATE_NOT_INITIALIZED`.
+
+Command creates an `ON COMMIT DROP` collector inside its transaction. After the callback closes and all already-started database work settles, SDI runs `SET CONSTRAINTS ALL IMMEDIATE`, copies observation rows into memory, seals observation, and commits. There is no SQL after a confirmed COMMIT. A registered write that is deferred again and reaches COMMIT after the drain fails with `SDI_OBSERVATION_SEALED`, so it cannot commit without impact. This means Command requires all deferred constraints and constraint triggers to succeed at SDI's pre-commit observation boundary; code that depends on a different end-of-COMMIT ordering must be changed.
+
+`setup` runs inside the operation transaction and may use `SET LOCAL ROLE` and `set_config(..., true)`. Do not depend on session state between operations. Supavisor and PgBouncer transaction endpoints require postgres.js `prepare: false`; SDI cannot reliably inspect that driver option at runtime.
+
+Node.js 22.18 or newer is required. See the [transaction-only migration guide](../../docs/migrations/postgres-0.6.md) for the breaking connection and deferred changes.
 
 When upgrading from 0.1.x, see the corrected [0.2.0 migration guide](../../docs/migrations/postgres-0.2.md).
 
@@ -83,7 +104,7 @@ When upgrading from 0.1.x, see the corrected [0.2.0 migration guide](../../docs/
 
 Version 0.4 adds native `tx.query(text, values)` for pg, scoped lazy postgres.js tagged queries, and optional `drizzleAdapter` / `prismaAdapter` subpaths. Pin Drizzle 0.45.2 or Prisma/client/adapter-pg/driver-adapter-utils 7.10.0 with pg 8.16.3. ORM clients execute through the guarded connection; their nested transactions use SDI savepoints. Repositories receive the command client explicitly.
 
-Regenerate and install observer protocol 9 artifacts when upgrading. See [0.4 migration and support](../../docs/migrations/transaction-impact-0.4.md) for supported native methods, installation, lifecycle limits, codecs and examples.
+Regenerate and install observer protocol 10 artifacts when upgrading. See [0.4 migration and support](../../docs/migrations/transaction-impact-0.4.md) for supported native methods, installation, lifecycle limits, codecs and examples.
 
 ### RLS dependency analysis
 

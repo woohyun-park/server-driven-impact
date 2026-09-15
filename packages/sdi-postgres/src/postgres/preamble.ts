@@ -1,7 +1,7 @@
 import type { Scalar } from '@server-driven-impact/core';
 import { observerInternals } from './observer.js';
-import { lockKeys } from './session.js';
 import { literal } from './sql.js';
+import { transactionGateSharedLockSql } from './transaction-gate.js';
 
 export const ISOLATION_LEVELS = Object.freeze([
   'read uncommitted',
@@ -17,30 +17,17 @@ function assertIsolationLevel(level: string): asserts level is IsolationLevel {
   if (!ISOLATION_LEVELS.includes(level as IsolationLevel)) throw new Error('INVALID_ISOLATION_LEVEL');
 }
 
-/**
- * The multi-statement string starts in an implicit transaction block; the `commit` that closes it
- * raises WARNING 25P01. SET LOCAL silences it and reverts when that block ends.
- */
-export const quietCommitSql = 'set local client_min_messages = error';
-
-/** Session-level lock taken before BEGIN so the transaction snapshot follows any migration commit. */
-export const sessionLockSql = `select pg_advisory_lock_shared(${lockKeys[0]},${lockKeys[1]})`;
-
-/** Per-session collector; `on commit preserve rows` keeps it across commands on the same backend. */
+/** Per-transaction collector. Nothing may depend on this table after COMMIT. */
 export const collectorTableSql =
-  `do $sdi$ begin if to_regclass('pg_temp.${observerInternals.collectorTable}') is null then ` +
   `create temporary table ${observerInternals.collectorTable}(` +
   'token text not null,resource text not null,operation text not null,' +
   'before_state jsonb not null,after_state jsonb not null,changed_columns jsonb' +
-  ') on commit preserve rows; end if; end $sdi$';
+  ') on commit drop';
 
-/**
- * One simple-protocol round trip. The `commit` closes the implicit multi-statement
- * transaction block; otherwise BEGIN could not change the isolation level.
- */
-export function readPreambleSql(isolationLevel: IsolationLevel): string {
+/** Transaction-pool-safe Query preamble. The gate lock is the first snapshot-bearing command. */
+export function transactionReadPreambleSql(isolationLevel: IsolationLevel): string {
   assertIsolationLevel(isolationLevel);
-  return [quietCommitSql, sessionLockSql, 'commit', `begin isolation level ${isolationLevel} read only`].join(';\n');
+  return [`begin isolation level ${isolationLevel} read only`, transactionGateSharedLockSql].join(';\n');
 }
 
 export function commandPreambleSql(options: { isolationLevel: IsolationLevel; token: string; scope: Scalar }): string {
@@ -57,11 +44,9 @@ export function commandPreambleSql(options: { isolationLevel: IsolationLevel; to
   // a guard and the scope must be escaped instead of dollar-quoted.
   if (scope.includes(tag.slice(0, -1)) || scope.includes('\0')) throw new Error('INVALID_SCOPE_LITERAL');
   return [
-    quietCommitSql,
-    sessionLockSql,
-    collectorTableSql,
-    'commit',
     `begin isolation level ${options.isolationLevel}`,
-    `select set_config('sdi.request_token',${literal(options.token)},true),set_config('sdi.scope',${tag}${scope}${tag},true)`,
+    transactionGateSharedLockSql,
+    collectorTableSql,
+    `select set_config('sdi.request_token',${literal(options.token)},true),set_config('sdi.scope',${tag}${scope}${tag},true),set_config('sdi.observation_phase','collecting',true)`,
   ].join(';\n');
 }

@@ -16,7 +16,13 @@ const resources = {
 };
 function fixture(
   commitError?: Error & { code?: string },
-  failures: { collection?: Error; rollback?: Error; driverResult?: unknown } = {},
+  failures: {
+    collection?: Error;
+    rollback?: Error;
+    driverResult?: unknown;
+    observerRows?: unknown[];
+    validation?: Error;
+  } = {},
 ) {
   const queries = { list: { input: { parse: (v: unknown) => v }, plan: q.select('parent') } };
   const fingerprint = observerFingerprint(resources, compileManifest(queries, resources));
@@ -27,6 +33,7 @@ function fixture(
     ]),
   );
   const catalogResult = async (text: string) => {
+    if (text.includes('server_version_num')) return [{ version: 180000 }];
     if (text.includes('observer_manifest')) return [{ fingerprint, definition_hashes: definitionHashes }];
     if (text.includes('from pg_trigger'))
       return ['delete', 'insert', 'truncate', 'update'].map(operation => ({
@@ -62,13 +69,22 @@ function fixture(
       },
     ];
   };
+  let commandReadyToCommit = false;
   const tx = {
     unsafe: vi.fn(async (text: string) => {
-      if (text === 'commit' && commitError) throw commitError;
+      if (text.includes('observer_manifest') && failures.validation) throw failures.validation;
+      if (text.includes("set_config('sdi.observation_phase','sealed'")) commandReadyToCommit = true;
+      if (text === 'commit' && commandReadyToCommit && commitError) throw commitError;
       if (text === 'rollback' && failures.rollback) throw failures.rollback;
       if (text.includes('delete from pg_temp.') && failures.collection) throw failures.collection;
+      if (text.includes('delete from pg_temp.') && failures.observerRows) return failures.observerRows;
       if (text === 'update parent set title=title' && failures.driverResult) return failures.driverResult;
-      if (text.includes('pg_class') || text.includes('pg_trigger') || text.includes('observer_manifest'))
+      if (
+        text.includes('server_version_num') ||
+        text.includes('pg_class') ||
+        text.includes('pg_trigger') ||
+        text.includes('observer_manifest')
+      )
         return catalogResult(text);
       return [];
     }),
@@ -114,6 +130,14 @@ it('exposes one flat native PostgreSQL command surface', async () => {
   });
 });
 
+it('validates the sealed observer protocol before invoking the first command callback', async () => {
+  const work = vi.fn(async () => undefined);
+  await expect(
+    fixture(undefined, { validation: new Error('OBSERVER_MANIFEST_MISMATCH') }).engine.command({ scope: 'u' }, work),
+  ).rejects.toThrow('OBSERVER_MANIFEST_MISMATCH');
+  expect(work).not.toHaveBeenCalled();
+});
+
 it('distinguishes server commit rejection from an unknown network outcome', async () => {
   const network = Object.assign(new Error('connection lost'), { code: 'ECONNRESET' });
   await expect(fixture(network).engine.command({ scope: 'u' }, async () => 1)).rejects.toMatchObject({
@@ -129,7 +153,7 @@ it('distinguishes server commit rejection from an unknown network outcome', asyn
   await expect(fixture(deferred).engine.command({ scope: 'u' }, async () => 1)).rejects.toBe(deferred);
 });
 
-it('preserves committed data when collection fails and discards the failed session without retrying', async () => {
+it('rolls back when observation collection fails before commit', async () => {
   const driverResult = Object.assign([] as unknown[], { count: 1, command: 'UPDATE' });
   const { engine, discard, release } = fixture(undefined, {
     collection: new Error('collector unavailable'),
@@ -142,11 +166,21 @@ it('preserves committed data when collection fails and discards the failed sessi
   } catch (error) {
     unavailable = error;
   }
-  expect(unavailable).toMatchObject({ code: 'IMPACT_UNAVAILABLE', commitState: 'committed' });
-  expect((unavailable as { data: unknown }).data).toBe(driverResult);
+  expect(unavailable).toMatchObject({ message: 'collector unavailable' });
   expect(work).toHaveBeenCalledTimes(1);
-  expect(discard).toHaveBeenCalledOnce();
-  expect(release).not.toHaveBeenCalled();
+  expect(discard).not.toHaveBeenCalled();
+  expect(release).toHaveBeenCalledTimes(2);
+});
+
+it('returns committed data through ImpactUnavailableError when impact conversion fails after commit', async () => {
+  const { engine, discard, release } = fixture(undefined, { observerRows: [{}] });
+  await expect(engine.command({ scope: 'u' }, async () => 'saved')).rejects.toMatchObject({
+    code: 'IMPACT_UNAVAILABLE',
+    commitState: 'committed',
+    data: 'saved',
+  });
+  expect(discard).not.toHaveBeenCalled();
+  expect(release).toHaveBeenCalledTimes(2);
 });
 
 it('discards a connection after rollback failure and preserves the original command failure', async () => {
@@ -157,5 +191,5 @@ it('discards a connection after rollback failure and preserves the original comm
     }),
   ).rejects.toThrow('business failed');
   expect(discard).toHaveBeenCalledOnce();
-  expect(release).not.toHaveBeenCalled();
+  expect(release).toHaveBeenCalledOnce();
 });

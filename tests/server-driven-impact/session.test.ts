@@ -1,6 +1,9 @@
 import { expect, it, vi } from 'vitest';
 import { guardDatabase } from '../../packages/sdi-runtime/src/runtime/guard.js';
-import { releaseSession, type ReservedSession } from '../../packages/sdi-postgres/src/postgres/session.js';
+import {
+  releaseTransactionConnection,
+  type ReservedConnection,
+} from '../../packages/sdi-postgres/src/postgres/connection.js';
 
 it('closes all open iterators and surfaces protocol cleanup failure', async () => {
   const close = vi.fn(async () => {
@@ -20,14 +23,13 @@ it('closes all open iterators and surfaces protocol cleanup failure', async () =
   await expect(guarded.settle()).rejects.toThrow('DATABASE_STREAM_CLEANUP_FAILED');
   expect(close).toHaveBeenCalledOnce();
 });
-it('never returns a broken postgres.js connection to the pool when backend termination is forbidden', async () => {
+it('quarantines a broken connection when the driver cannot discard one reservation', async () => {
   const release = vi.fn();
   const session = {
-    unsafe: vi.fn(async () => {
-      throw Object.assign(new Error('denied'), { code: '42501' });
-    }),
+    unsafe: vi.fn(),
     release,
-  } as unknown as ReservedSession;
-  expect(await releaseSession(session, true)).toBe(false);
+  } as unknown as ReservedConnection;
+  expect(await releaseTransactionConnection(session, true)).toBe(false);
   expect(release).not.toHaveBeenCalled();
+  expect(session.unsafe).not.toHaveBeenCalled();
 });

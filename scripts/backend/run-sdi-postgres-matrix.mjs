@@ -8,53 +8,53 @@ const directory = resolve('.local/runtime/postgres-release');
 mkdirSync(directory, { recursive: true });
 const results = [];
 for (const { major, tag, digest } of targets) {
-  const container = 'sdi-matrix-' + randomUUID().slice(0, 8);
-  try {
-    execFileSync('docker', [
-      'run',
-      '--detach',
-      '--name',
-      container,
-      '--publish',
-      '127.0.0.1::5432',
-      '--env',
-      'POSTGRES_PASSWORD=sdi',
-      '--env',
-      'POSTGRES_DB=sdi',
-      `postgres:${tag}@${digest}`,
-    ]);
-    let ready = false;
-    for (let attempt = 0; attempt < 600; attempt++) {
-      if (
-        spawnSync('docker', ['exec', container, 'pg_isready', '-h', '127.0.0.1', '-U', 'postgres', '-d', 'sdi'], {
-          stdio: 'ignore',
-        }).status === 0
-      ) {
-        ready = true;
-        break;
+  for (const driver of ['postgres', 'pg']) {
+    const container = 'sdi-matrix-' + randomUUID().slice(0, 8);
+    try {
+      execFileSync('docker', [
+        'run',
+        '--detach',
+        '--name',
+        container,
+        '--publish',
+        '127.0.0.1::5432',
+        '--env',
+        'POSTGRES_PASSWORD=sdi',
+        '--env',
+        'POSTGRES_DB=sdi',
+        `postgres:${tag}@${digest}`,
+      ]);
+      let ready = false;
+      for (let attempt = 0; attempt < 600; attempt++) {
+        if (
+          spawnSync('docker', ['exec', container, 'psql', '-U', 'postgres', '-d', 'sdi', '-Atqc', 'select 1'], {
+            stdio: 'ignore',
+          }).status === 0
+        ) {
+          ready = true;
+          break;
+        }
+        await new Promise(resolve => setTimeout(resolve, 100));
       }
-      await new Promise(resolve => setTimeout(resolve, 100));
-    }
-    if (!ready) {
-      spawnSync('docker', ['logs', container], { stdio: 'inherit' });
-      throw new Error(`PostgreSQL ${major} did not become ready`);
-    }
-    const info = JSON.parse(execFileSync('docker', ['inspect', container], { encoding: 'utf8' }))[0];
-    const port = info.NetworkSettings.Ports['5432/tcp'][0].HostPort;
-    execFileSync('docker', [
-      'exec',
-      container,
-      'psql',
-      '-U',
-      'postgres',
-      '-d',
-      'sdi',
-      '-v',
-      'ON_ERROR_STOP=1',
-      '-c',
-      "create role routine_runtime login password 'runtime' nobypassrls",
-    ]);
-    for (const driver of ['postgres', 'pg']) {
+      if (!ready) {
+        spawnSync('docker', ['logs', container], { stdio: 'inherit' });
+        throw new Error(`PostgreSQL ${major} did not become ready`);
+      }
+      const info = JSON.parse(execFileSync('docker', ['inspect', container], { encoding: 'utf8' }))[0];
+      const port = info.NetworkSettings.Ports['5432/tcp'][0].HostPort;
+      execFileSync('docker', [
+        'exec',
+        container,
+        'psql',
+        '-U',
+        'postgres',
+        '-d',
+        'sdi',
+        '-v',
+        'ON_ERROR_STOP=1',
+        '-c',
+        "create role routine_runtime login password 'runtime' nobypassrls",
+      ]);
       const report = resolve(directory, `${major}-${driver}.json`);
       const started = Date.now();
       const child = spawnSync(process.execPath, ['scripts/backend/run-sdi-postgres-tests.mjs'], {
@@ -83,9 +83,9 @@ for (const { major, tag, digest } of targets) {
         resolve(directory, 'matrix.json'),
         JSON.stringify({ executedAt: new Date().toISOString(), results }, null, 2) + '\n',
       );
+    } finally {
+      execFileSync('docker', ['rm', '--force', '--volumes', container], { stdio: 'ignore' });
     }
-  } finally {
-    execFileSync('docker', ['rm', '--force', '--volumes', container], { stdio: 'ignore' });
   }
 }
 console.log(JSON.stringify(results, null, 2));

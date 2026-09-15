@@ -30,7 +30,6 @@ export interface PgOptions {
   database: Pool;
   setup?: (tx: PgTransaction, scope: Scalar) => Promise<void>;
   isolationLevel?: IsolationLevel;
-  connectionMode?: 'direct' | 'session' | 'transaction';
 }
 
 /** Bridge only the common session operations, preserving node-postgres row codecs and SQLSTATE. */
@@ -134,6 +133,8 @@ export function pgDatabase(pool: Pool) {
 }
 
 export function pgAdapter(options: PgOptions): ImpactAdapter<PgCommandDb> {
+  if ('query' in options || 'command' in options || 'connectionMode' in options)
+    throw new Error('POSTGRES_CONNECTION_OPTIONS_REMOVED');
   if (!options.database || typeof options.database.connect !== 'function') throw new Error('PG_POOL_REQUIRED');
   return postgresAdapter({
     ...options,

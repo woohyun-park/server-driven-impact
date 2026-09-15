@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Run Query, Command, and catalog validation through one transaction-pool-compatible database; remove the split/session connection API.
+- Drain observations and seal registered writes before COMMIT, use an `ON COMMIT DROP` collector, and issue no SQL after a confirmed COMMIT.
+- Install a transaction-scoped migration gate and add PgBouncer mixed Query/Command conformance for postgres.js and node-postgres.
+- Install observer protocol 10; regenerate and apply PostgreSQL artifacts when upgrading.
+
 ## 0.5.0-impact.0
 
 - Remove cache-specific string-comparison proof plumbing from the adapter contract.

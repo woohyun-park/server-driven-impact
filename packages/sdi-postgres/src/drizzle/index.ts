@@ -12,9 +12,9 @@ export type DrizzleCommandDb<TSchema extends Record<string, unknown> = Record<st
   transaction<T>(work: (tx: DrizzleCommandDb<TSchema>) => Promise<T>): Promise<T>;
   savepoint<T>(work: (tx: DrizzleCommandDb<TSchema>) => Promise<T>): Promise<T>;
 };
-export interface DrizzleOptions<TSchema extends Record<string, unknown> = Record<string, never>> extends PgOptions {
+export type DrizzleOptions<TSchema extends Record<string, unknown> = Record<string, never>> = PgOptions & {
   drizzle?: Pick<DrizzleConfig<TSchema>, 'schema' | 'casing' | 'logger'>;
-}
+};
 
 /** Construct the ORM over a guarded driver execution point, preserving its prototypes and lazy builders. */
 export function drizzleAdapter<TSchema extends Record<string, unknown> = Record<string, never>>(

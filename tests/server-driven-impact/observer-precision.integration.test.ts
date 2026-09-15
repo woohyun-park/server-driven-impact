@@ -44,6 +44,9 @@ const definitions = (schema: string) => {
     },
     large: { schema, table: 'large', idColumn: 'id', scopeColumn: 'tenant', columns: ['id', 'tenant', 'customer'] },
     small: { schema, table: 'small', idColumn: 'id', scopeColumn: 'tenant', columns: ['id', 'tenant', 'customer'] },
+    lateSource: { schema, table: 'late_source', idColumn: 'id', scopeColumn: null, columns: ['id'] },
+    lateQueue: { schema, table: 'late_queue', idColumn: 'id', scopeColumn: null, columns: ['id'] },
+    lateEffect: { schema, table: 'late_effect', idColumn: 'id', scopeColumn: null, columns: ['id'] },
   };
   const by = (resource: string, column: string, field = column) => ({
     input,
@@ -58,6 +61,9 @@ const definitions = (schema: string) => {
     largeList: by('large', 'customer'),
     largeDetail: by('large', 'id'),
     small: by('small', 'id'),
+    lateSource: by('lateSource', 'id'),
+    lateQueue: by('lateQueue', 'id'),
+    lateEffect: by('lateEffect', 'id'),
   };
   return { resources, manifest: compileManifest(queries, resources) };
 };
@@ -86,12 +92,34 @@ describe.skipIf(!enabled)('PostgreSQL collected WriteSet completeness and precis
       create table "${schema}".deferred(id text primary key,tenant text,customer text);
       create table "${schema}".large(id text primary key,tenant text,customer text);
       create table "${schema}".small(id text primary key,tenant text,customer text);
+      create table "${schema}".late_source(id text primary key);
+      create table "${schema}".late_queue(id text primary key);
+      create table "${schema}".late_effect(id text primary key);
       create function "${schema}".audit_parent() returns trigger language plpgsql as $$begin
         insert into "${schema}".audit values(new.id,new.tenant,old.customer,new.customer);return new;end$$;
       create trigger audit_parent after update on "${schema}".parents for each row execute function "${schema}".audit_parent();
       create function "${schema}".defer_audit() returns trigger language plpgsql as $$begin
         insert into "${schema}".deferred values(new.id,new.tenant,new.new_customer);return new;end$$;
       create constraint trigger defer_audit after insert on "${schema}".audit deferrable initially deferred for each row execute function "${schema}".defer_audit();
+      create function "${schema}".schedule_late() returns trigger language plpgsql as $$begin
+        set constraints all deferred;
+        insert into "${schema}".late_queue values(new.id);
+        return new;
+      end$$;
+      create constraint trigger schedule_late after insert on "${schema}".late_source deferrable initially deferred for each row execute function "${schema}".schedule_late();
+      create function "${schema}".write_late() returns trigger language plpgsql as $$begin
+        if new.id='caught' then
+          begin
+            insert into "${schema}".late_effect values(new.id);
+          exception when sqlstate '55000' then
+            return new;
+          end;
+        else
+          insert into "${schema}".late_effect values(new.id);
+        end if;
+        return new;
+      end$$;
+      create constraint trigger write_late after insert on "${schema}".late_queue deferrable initially deferred for each row execute function "${schema}".write_late();
       insert into "${schema}".parents values('before','a','A');
       insert into "${schema}".children values('line','a','before');
       insert into "${schema}".large select 'batch-'||n,'a','A' from generate_series(1,${LIMITS.facts + 25}) n;
@@ -190,6 +218,32 @@ describe.skipIf(!enabled)('PostgreSQL collected WriteSet completeness and precis
       values: [{ id: 'precise' }],
     });
     expect(calculateImpact(facts, { resources, manifest, scope: 'other' }).targets).toEqual([]);
+  });
+
+  it('rolls back instead of committing a registered write scheduled after the observer drain', async () => {
+    const writes = new WriteSet();
+    await expect(
+      bound.command(null, writes, tx => tx.execute(sql`insert into ${identifier(schema)}.late_source values('late')`)),
+    ).rejects.toThrow(/SDI_OBSERVATION_SEALED/);
+    expect(writes.snapshot()).toEqual([]);
+    for (const table of ['late_source', 'late_queue', 'late_effect'])
+      expect(await admin.unsafe(`select id from "${schema}"."${table}"`)).toEqual([]);
+  });
+
+  it('keeps caught sealed writes rolled back while committing the already observed work', async () => {
+    const writes = new WriteSet();
+    await bound.command(null, writes, tx =>
+      tx.execute(sql`insert into ${identifier(schema)}.late_source values('caught')`),
+    );
+    expect(
+      writes
+        .snapshot()
+        .map(fact => fact.resource)
+        .sort(),
+    ).toEqual(['lateQueue', 'lateSource']);
+    expect(await admin.unsafe(`select id from "${schema}".late_source where id='caught'`)).toEqual([{ id: 'caught' }]);
+    expect(await admin.unsafe(`select id from "${schema}".late_queue where id='caught'`)).toEqual([{ id: 'caught' }]);
+    expect(await admin.unsafe(`select id from "${schema}".late_effect where id='caught'`)).toEqual([]);
   });
 
   it('widens mixed-scope batches so neither caller loses its actual result change', async () => {

@@ -8,6 +8,7 @@ on:
       - 'sdi.*'
       - 'scripts/backend/run-sdi-postgres-tests.mjs'
       - 'scripts/backend/run-sdi-postgres-matrix.mjs'
+      - 'scripts/backend/run-sdi-pgbouncer-tests.mjs'
       - 'spec/server-driven-impact/**'
       - 'package.json'
       - 'pnpm-lock.yaml'
@@ -20,6 +21,7 @@ on:
       - 'sdi.*'
       - 'scripts/backend/run-sdi-postgres-tests.mjs'
       - 'scripts/backend/run-sdi-postgres-matrix.mjs'
+      - 'scripts/backend/run-sdi-pgbouncer-tests.mjs'
       - 'spec/server-driven-impact/**'
       - 'package.json'
       - 'pnpm-lock.yaml'
@@ -82,3 +84,20 @@ jobs:
           -c "create role routine_runtime login password 'runtime' nobypassrls"
       - run: pnpm typecheck:sdi
       - run: pnpm test:sdi:postgres
+
+  transaction-pool:
+    name: PgBouncer transaction pooling
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build:sdi
+      - run: pnpm test:pgbouncer

@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { canonical, isScalar, LIMITS, type RowState, type Scalar, type WriteFact } from '@server-driven-impact/core';
 import { identityColumns, type QueryManifest, type Resources } from '@server-driven-impact/runtime/adapter';
 import { literal } from './sql.js';
+import { transactionGateExclusiveLockSql, transactionGateRelation, transactionGateSchema } from './transaction-gate.js';
 
 export interface ObserverRow {
   resource: string;
@@ -32,7 +33,7 @@ export function observerFingerprint(resources: Resources, manifest: QueryManifes
   return createHash('sha256')
     .update(
       canonical({
-        observerProtocol: 9,
+        observerProtocol: 10,
         resources,
         reads: manifest.reads,
         ...(manifest.postgres ? { postgres: manifest.postgres } : {}),
@@ -182,10 +183,13 @@ function triggerFunction(
   return `
     create or replace function ${internalSchema}.${functionName(resourceId, operation)}() returns trigger
     language plpgsql security invoker set search_path=pg_catalog,pg_temp as $$
-    declare v_token text; v_resource text;
+    declare v_token text; v_resource text; v_phase text;
     begin
+      v_phase := current_setting('sdi.observation_phase', true);
+      if v_phase = 'sealed' then raise exception 'SDI_OBSERVATION_SEALED' using errcode='55000'; end if;
       v_token := current_setting('sdi.request_token', true);
       if v_token is null or v_token = '' then return null; end if;
+      if v_phase is distinct from 'collecting' then raise exception 'SDI_OBSERVATION_STATE_INVALID' using errcode='55000'; end if;
       ${body}
       while (select count(*) from pg_temp.${collectorTable} where token=v_token)>${LIMITS.facts}
          or coalesce((select sum(octet_length(before_state::text)+octet_length(after_state::text)+coalesce(octet_length(changed_columns::text),0)) from pg_temp.${collectorTable} where token=v_token),0)>${LIMITS.factBytes} loop
@@ -212,6 +216,9 @@ export function generateObserverMigration(
   const fingerprint = observerFingerprint(resources, manifest);
   const { internalSchema } = observerLayout(fingerprint);
   const statements = [
+    `create schema if not exists "${transactionGateSchema}";`,
+    `create table if not exists ${transactionGateRelation}(singleton boolean primary key default true check(singleton));`,
+    `${transactionGateExclusiveLockSql};`,
     `create schema if not exists ${internalSchema};`,
     `create table if not exists ${internalSchema}.${metadataTable}(singleton boolean primary key default true check(singleton),fingerprint text not null,definition_hashes jsonb not null default '{}'::jsonb);`,
     `insert into ${internalSchema}.${metadataTable}(singleton,fingerprint) values(true,${literal(fingerprint)}) on conflict(singleton) do update set fingerprint=excluded.fingerprint;`,
@@ -258,6 +265,8 @@ export function generateObserverMigration(
   );
   if (options.runtimeRole)
     statements.push(
+      `grant usage on schema "${transactionGateSchema}" to ${identifier(options.runtimeRole)};`,
+      `grant select on table ${transactionGateRelation} to ${identifier(options.runtimeRole)};`,
       `grant usage on schema ${internalSchema} to ${identifier(options.runtimeRole)};`,
       `grant select on ${internalSchema}.${metadataTable} to ${identifier(options.runtimeRole)};`,
     );

@@ -10,6 +10,7 @@ import {
   createPostgresCatalogResolver,
   generateObserverMigration,
   identifier,
+  installPostgresTransactionGate,
   migratePostgresQueries,
   postgresAdapter,
   sql,
@@ -20,7 +21,7 @@ import {
   type PostgresSourceDefinition,
 } from '@server-driven-impact/postgres';
 import { pgAdapter, pgDatabase, type PgExecuteResult } from '@server-driven-impact/postgres/pg';
-import type { ImpactAdapter } from '@server-driven-impact/runtime/adapter';
+import { bindAdapter, type ImpactAdapter } from '@server-driven-impact/runtime/adapter';
 
 const adminUrl = process.env.SDI_POSTGRES_ADMIN_URL;
 const runtimeUrl = process.env.SDI_POSTGRES_RUNTIME_URL;
@@ -108,6 +109,7 @@ describe.skipIf(!enabled)('PostgreSQL release contract', () => {
       create function "${schema}".shadow_read() returns bigint language sql stable set search_path="${schema}",public as $$with a as (select * from a) select count(*) from a$$;
       grant usage on schema "${schema}" to routine_runtime;
       grant select,insert,update,delete on all tables in schema "${schema}" to routine_runtime;`);
+    await admin.begin(transaction => installPostgresTransactionGate(transaction, 'routine_runtime'));
   });
   afterAll(async () => {
     await database?.end();
@@ -152,7 +154,7 @@ describe.skipIf(!enabled)('PostgreSQL release contract', () => {
     await expect(engine.queryUncached('error', {}, { scope: 'a' })).rejects.toMatchObject({ code: '22012' });
   });
 
-  it('runs Query and Command without catalog validation SQL and validates only when requested', async () => {
+  it('validates the first Command once, skips Query validation, and allows explicit revalidation', async () => {
     const { artifact } = await install({ read: definition(`select * from "${schema}".a order by id`) });
     const statements: string[] = [];
     const engine = createImpact({
@@ -161,10 +163,17 @@ describe.skipIf(!enabled)('PostgreSQL release contract', () => {
       queries: artifact.queries,
     });
     await engine.query('read', {}, { scope: 'a' });
+    const catalogSql = /\bpg_(?:class|proc|trigger|policy|attribute|index)\b|observer_manifest/i;
+    expect(statements.filter(text => catalogSql.test(text))).toEqual([]);
+    statements.length = 0;
     await engine.command({ scope: 'a' }, db =>
       db.execute(new Sql(`update "${schema}".a set value=value where id='one'`)),
     );
-    const catalogSql = /\bpg_(?:class|proc|trigger|policy|attribute|index)\b|observer_manifest/i;
+    expect(statements.some(text => catalogSql.test(text))).toBe(true);
+    statements.length = 0;
+    await engine.command({ scope: 'a' }, db =>
+      db.execute(new Sql(`update "${schema}".a set value=value where id='one'`)),
+    );
     expect(statements.filter(text => catalogSql.test(text))).toEqual([]);
     statements.length = 0;
     await engine.validate();
@@ -328,6 +337,38 @@ describe.skipIf(!enabled)('PostgreSQL release contract', () => {
     expect(await engine.query('routed', {}, { scope: 'a' })).toEqual([{ id: 'one', value: 11 }]);
   });
 
+  it('serializes a transaction-pooled Query against a cooperating migration', async () => {
+    const definitions = { read: definition(`select * from "${schema}".a order by id`) };
+    const installed = await migratePostgresQueries(admin, resources, definitions, options());
+    const transactionAdapter = pgPool ? pgAdapter({ database: pgPool }) : postgresAdapter({ database });
+    const boundQuery = transactionAdapter[bindAdapter](installed.resources, installed.manifest);
+    let queryEntered!: () => void;
+    const entered = new Promise<void>(resolve => {
+      queryEntered = resolve;
+    });
+    let releaseQuery!: () => void;
+    const holdQuery = new Promise<void>(resolve => {
+      releaseQuery = resolve;
+    });
+    const activeQuery = boundQuery.query('a', async () => {
+      queryEntered();
+      await holdQuery;
+      return 'held';
+    });
+    await entered;
+    let migrated = false;
+    const migration = migratePostgresQueries(admin, resources, definitions, options()).then(result => {
+      migrated = true;
+      return result;
+    });
+    await new Promise(resolve => setTimeout(resolve, 50));
+    expect(migrated).toBe(false);
+    releaseQuery();
+    expect(await activeQuery).toBe('held');
+    await migration;
+    expect(migrated).toBe(true);
+  });
+
   it('detects function-only and permission-only drift when explicitly validated', async () => {
     const first = await install({ read: definition(`select "${schema}".shadow_read()`) });
     await admin.unsafe(
@@ -354,6 +395,7 @@ describe.skipIf(!enabled)('PostgreSQL release contract', () => {
     });
     const changing = admin.begin('isolation level read committed', async tx => {
       await tx.unsafe('select pg_advisory_xact_lock($1,$2)', [0x534449, 0x5047]);
+      await tx.unsafe('lock table only "sdi_control"."transaction_gate" in access exclusive mode');
       await tx.unsafe(`create or replace view "${schema}".routed as select * from "${schema}".a`);
       entered();
       await gate;
@@ -434,7 +476,7 @@ describe.skipIf(!enabled)('PostgreSQL release contract', () => {
     expect(await engine.query('read', {}, { scope: 'a' })).toHaveLength(2);
   });
 
-  it('routes custom type semantics to native no-store execution and rejects transaction pooling at activation', async () => {
+  it('routes custom type semantics to native no-store execution on the transaction adapter', async () => {
     await admin.unsafe(
       `create type "${schema}".mood as enum('ok','bad');create function "${schema}".custom_type_read(value "${schema}".mood) returns "${schema}".mood language sql immutable as $$select $1$$`,
     );
@@ -446,9 +488,20 @@ describe.skipIf(!enabled)('PostgreSQL release contract', () => {
     expect((await engine.queryUncached('custom', {}, { scope: 'a' })).data).toEqual([{ value: 'ok' }]);
     expect(artifact.diagnostics.implicit).toBe('UNRESOLVED_FUNCTION_TYPES');
     await expect(engine.query('implicit', {}, { scope: 'a' })).rejects.toThrow('QUERY_REQUIRES_NO_STORE_EXECUTION');
-    expect(() => postgresAdapter({ database, connectionMode: 'transaction' })).toThrow(
-      'POSTGRES_SESSION_CONNECTION_REQUIRED',
-    );
+    const queryAdapter = pgPool ? pgAdapter({ database: pgPool }) : postgresAdapter({ database });
+    const queryEngine = createImpact({
+      adapter: queryAdapter as never,
+      resources: artifact.resources,
+      queries: artifact.queries,
+    });
+    await queryEngine.validate();
+    expect(await queryEngine.queryUncached('custom', {}, { scope: 'a' })).toMatchObject({
+      data: [{ value: 'ok' }],
+      cachePolicy: 'no-store',
+    });
+    await expect(queryEngine.command({ scope: 'a' }, async () => undefined)).resolves.toMatchObject({
+      data: undefined,
+    });
   });
 
   it('limits custom-column fallback to endpoints that read the custom relation', async () => {

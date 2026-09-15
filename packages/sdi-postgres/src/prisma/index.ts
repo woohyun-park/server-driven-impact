@@ -7,11 +7,11 @@ import { pgAdapter, type PgCommandDb, type PgOptions } from '../pg/index.js';
 export interface PrismaCommandClient {
   $disconnect(): Promise<void>;
 }
-export interface PrismaOptions<Client extends PrismaCommandClient> extends PgOptions {
+export type PrismaOptions<Client extends PrismaCommandClient> = PgOptions & {
   /** Construct your generated Prisma 7.10 client with the supplied public driver adapter. */
   createClient: (adapter: SqlDriverAdapterFactory) => Client;
   schema?: string;
-}
+};
 
 /** A scoped pg facade; all execution still crosses SDI's native transaction guard. */
 class CommandPool extends pg.Pool {

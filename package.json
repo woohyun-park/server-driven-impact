@@ -13,6 +13,7 @@
     "typecheck": "pnpm build && pnpm --filter './packages/sdi-*' -r typecheck && tsc -p tsconfig.json",
     "test": "pnpm build && vitest run --config sdi.vitest.config.ts",
     "test:postgres": "node scripts/backend/run-sdi-postgres-tests.mjs",
+    "test:pgbouncer": "node scripts/backend/run-sdi-pgbouncer-tests.mjs",
     "test:matrix": "node scripts/backend/run-sdi-postgres-matrix.mjs",
     "benchmark:core": "pnpm build && node scripts/backend/benchmark-sdi-core.mjs",
     "benchmark:postgres": "pnpm build && node scripts/backend/benchmark-sdi-postgres.mjs",
