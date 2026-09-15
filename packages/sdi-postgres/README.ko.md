@@ -113,7 +113,7 @@ console.log(data.count); // postgres.js: number
 console.log(impact.targets);
 ```
 
-`pgAdapter`에서는 `data.rowCount`를 사용하며 TypeScript 타입은 `number | null`입니다. 이 값은 실제 값이 달라진 행의 수가 아니라 PostgreSQL 명령 태그가 보고한 처리 행 수입니다. 따라서 한 행을 같은 값으로 갱신하면 처리 행 수는 `1`이어도 관찰 가능한 값이 바뀌지 않아 `impact.targets`는 비어 있을 수 있습니다. SQLSTATE 같은 실행 실패 정보는 성공 결과와 별개인 드라이버 오류 객체로 유지됩니다. `savepoint()` 안에서도 같은 결과 타입이 이어지며, 커밋 뒤 impact 수집이 실패하면 원본 결과가 `ImpactUnavailableError.data`에 보존됩니다.
+`pgAdapter`에서는 `data.rowCount`를 사용하며 TypeScript 타입은 `number | null`입니다. 이 값은 실제 값이 달라진 행의 수가 아니라 PostgreSQL 명령 태그가 보고한 처리 행 수입니다. 따라서 한 행을 같은 값으로 갱신하면 처리 행 수는 `1`이어도 관찰 가능한 값이 바뀌지 않아 `impact.targets`는 비어 있을 수 있습니다. SQLSTATE 같은 실행 실패 정보는 성공 결과와 별개인 드라이버 오류 객체로 유지됩니다. `savepoint()` 안에서도 같은 결과 타입이 이어지며, 커밋 뒤 impact 변환이 실패하면 원본 결과가 `ImpactUnavailableError.data`에 보존됩니다.
 
 테이블은 미리 존재해야 하며 runtime role에는 일반적인 테이블 권한이 필요합니다. RLS 정책은 `setup`에서 설정한 scope와 같은 기준을 사용해야 합니다.
 
@@ -121,13 +121,34 @@ console.log(impact.targets);
 
 1. schema나 Query 정의가 바뀐 배포에서 observer migration을 생성하고 적용합니다.
 2. 애플리케이션 시작이나 health check에서 `engine.validate()`를 호출합니다.
-3. 일반 요청은 engine의 Query와 Command를 사용합니다. 이 경로는 전체 catalog 검증을 매번 반복하지 않습니다.
+3. 일반 요청은 engine의 Query와 Command를 사용합니다. bound adapter의 첫 Command도 protocol 10 observer 검증을 한 번 수행해 캐시하며, 이후 요청은 전체 catalog 검증을 반복하지 않습니다.
 
-adapter는 하나의 물리 세션에서 transaction, 임시 collector, COMMIT 이후 관찰 결과 수집을 이어갑니다. 따라서 transaction pooling은 이 계약을 만족하지 않습니다. 다른 연결이나 외부 서비스에서 일어난 쓰기도 현재 Command 결과에 자동으로 포함되지 않습니다.
+자동 impact는 해당 SDI Command transaction 안의 등록 resource 쓰기를 대상으로 합니다. 다른 연결이나 외부 서비스에서 일어난 쓰기는 현재 Command 결과에 자동으로 포함되지 않습니다.
+
+## Transaction pooling
+
+Query, Command, catalog validation은 모두 한 transaction 동안만 연결을 사용합니다. adapter에는 PgBouncer 또는 Supavisor transaction endpoint 하나를 전달합니다.
+
+```ts
+const database = postgres(process.env.SUPAVISOR_TRANSACTION_URL!, {
+  max: 1,
+  prepare: false,
+});
+
+const adapter = postgresAdapter({ database, setup });
+```
+
+`pgAdapter({ database: pool })`, `drizzleAdapter`, `prismaAdapter`도 같은 계약을 사용합니다. 제거된 `query`, `command`, `connectionMode` 옵션을 전달하면 조용히 무시하지 않고 `POSTGRES_CONNECTION_OPTIONS_REMOVED`로 실패합니다.
+
+각 작업은 transaction을 시작하고 애플리케이션 작업 전에 안정된 `sdi_control.transaction_gate`에 ACCESS SHARE lock을 잡습니다. migration helper는 같은 gate에 ACCESS EXCLUSIVE lock을 잡습니다. `generateObserverMigration()`은 gate를 설치하고 배타 잠금을 잡아 runtime role 권한을 부여합니다. 생성 SQL 전체를 하나의 명시적 migration transaction에서 적용해야 합니다. 또한 `migratePostgresQueries()`와 `migratePostgresArtifacts()`는 transaction 단위 advisory lock으로 migration 준비도 직렬화합니다. gate가 없으면 `POSTGRES_TRANSACTION_GATE_NOT_INITIALIZED`로 실패합니다.
+
+Command는 transaction 안에서 `ON COMMIT DROP` collector를 만듭니다. callback을 닫고 이미 시작된 DB 작업을 모두 정리한 다음 `SET CONSTRAINTS ALL IMMEDIATE`를 실행하고, observation 행을 메모리로 복사하고, observation을 sealed 상태로 만든 뒤 COMMIT합니다. 성공한 COMMIT 뒤에는 SQL을 실행하지 않습니다. drain 뒤 다시 defer된 등록 resource 쓰기가 COMMIT에서 실행되면 `SDI_OBSERVATION_SEALED`로 전체 transaction이 실패하므로 impact 없이 커밋될 수 없습니다. 따라서 deferred constraint와 constraint trigger는 SDI의 COMMIT 전 observation 경계에서 성공해야 합니다. COMMIT 끝부분의 다른 실행 순서에 의존한 코드는 수정해야 합니다.
+
+`setup`은 작업 transaction 안에서 실행되며 `SET LOCAL ROLE`, `set_config(..., true)`를 사용할 수 있습니다. 요청 사이 session 상태에 의존하면 안 됩니다. Supavisor/PgBouncer transaction endpoint에서는 postgres.js를 `prepare: false`로 생성해야 하며, SDI는 이 설정을 런타임에 안정적으로 검사할 수 없습니다.
 
 PostgreSQL 14–18에서 postgres.js와 pg를 모두 사용하는 conformance suite를 실행합니다. opaque dynamic SQL 의존성 추론, 외부 I/O 관찰, autonomous procedure, held cursor, two-phase commit은 원자적 Command 계약 밖에 있습니다. 자세한 보장 범위는 [PostgreSQL 호환 가이드](../../spec/server-driven-impact/postgres-compatibility.md)를 참고하세요.
 
-Node.js 22.18 이상이 필요합니다.
+Node.js 22.18 이상이 필요합니다. 연결 API와 deferred 계약 변경은 [transaction-only 이전 가이드](../../docs/migrations/postgres-0.6.md)를 참고하세요.
 
 0.1.x에서 올리는 경우 누락 내용을 보완한 [0.2.0 마이그레이션 문서](../../docs/migrations/postgres-0.2.md)를 참고하세요.
 
@@ -135,7 +156,7 @@ Node.js 22.18 이상이 필요합니다.
 
 0.4는 pg의 `tx.query(text, values)`, postgres.js의 지연 실행 tagged query, 선택 subpath인 `drizzleAdapter`·`prismaAdapter`를 제공합니다. Drizzle 0.45.2 또는 Prisma/client/adapter-pg/driver-adapter-utils 7.10.0과 pg 8.16.3 조합을 사용합니다. ORM의 실제 실행은 보호된 같은 연결을 통과하고, 중첩 transaction은 SDI savepoint에 연결됩니다. 업무 함수에는 command client를 명시적으로 전달합니다.
 
-업그레이드 시 observer protocol 9 artifact를 재생성·설치해야 합니다. 지원 메서드·설치·수명·codec·예제는 [0.4 이전 가이드](../../docs/migrations/transaction-impact-0.4.md)를 참고하세요.
+업그레이드 시 observer protocol 10 artifact를 재생성·설치해야 합니다. 지원 메서드·설치·수명·codec·예제는 [0.4 이전 가이드](../../docs/migrations/transaction-impact-0.4.md)를 참고하세요.
 
 ### RLS 의존성 분석
 

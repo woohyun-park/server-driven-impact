@@ -3,3 +3,4 @@ dist/
 .local/
 *.tgz
 .DS_Store
+.superpowers/

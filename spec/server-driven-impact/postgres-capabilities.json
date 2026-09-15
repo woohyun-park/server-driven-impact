@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "verifiedAt": "2026-09-08",
+  "verifiedAt": "2026-09-15",
   "postgres": {
     "majors": [
       14,
@@ -9,7 +9,7 @@
       17,
       18
     ],
-    "connectionMode": "direct-or-session-pool",
+    "connectionMode": "transaction-pool",
     "drivers": [
       "postgres@3.4.8",
       "pg@8.16.3"
@@ -123,7 +123,7 @@
       "id": "schema-lock-snapshot",
       "status": "verified",
       "mode": "release-contract",
-      "implementation": "src/postgres/session.ts",
+      "implementation": "src/postgres/connection.ts",
       "fixture": "tests/postgres-release.integration.test.ts#validates against the post-migration catalog snapshot after waiting for its lock"
     },
     {
@@ -152,13 +152,13 @@
       "status": "verified",
       "mode": "release-contract",
       "implementation": "src/postgres/artifact.ts",
-      "fixture": "tests/postgres-release.integration.test.ts#routes custom type semantics to native no-store execution and rejects transaction pooling at activation"
+      "fixture": "tests/postgres-release.integration.test.ts#routes custom type semantics to native no-store execution on the transaction adapter"
     },
     {
       "id": "commit-outcome-recovery",
       "status": "verified",
       "mode": "fault-injection-and-cache-retirement",
-      "fixture": "tests/write-access.test.ts#preserves committed data when collection fails and discards the failed session without retrying"
+      "fixture": "tests/write-access.test.ts#returns committed data through ImpactUnavailableError when impact conversion fails after commit"
     },
     {
       "id": "native-representation-and-mvcc",

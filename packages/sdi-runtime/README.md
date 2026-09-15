@@ -52,26 +52,21 @@ database.close();
 
 Commands return `{ data, impact }`. The application decides how to serialize that value over HTTP and how a frontend uses it. `validate()` is explicit and is suitable for startup, deployment, or a health check; normal Query and Command execution does not scan the whole database catalog.
 
-For server-owned keys, register versioned `cacheContracts` and select the output with the third argument to `command()`. Contract definitions and OpenAPI metadata come from `@server-driven-impact/cache-contract`.
-
-For a required unrestricted string used by a direct equality predicate, built-in adapters automatically narrow cache invalidation after `validate()` proves the live column has exact string equality. Runtime compares the raw and parsed value on every verified field and rejects a request if parsing changes it. Before database validation, or for unsupported collations/operators, invalidation keeps the endpoint fallback.
+Query inputs default to `inputRelation: 'preserve'`. If a parser changes a scalar used by a selector, runtime rejects the query because the dependency would describe a different input than SQL executed. Declare `inputRelation: 'opaque'` when normalization is server-owned:
 
 ```ts
-// Choose one call per business operation:
-const logical = await engine.command(context, work);
-// { data, impact }
-
-const cached = await engine.command(context, work, {
-  cacheContract: {id: 'web-cache', version: 1},
+const queries = defineQueries({
+  'profiles.byUsername': {
+    input: z.object({ username: z.string().trim().toLowerCase() }),
+    inputRelation: 'opaque',
+    plan: q.select('profiles', { where: [q.eq('username', q.input('username'))] }),
+  },
 });
-// { data, impact, cacheInvalidation }
 ```
 
-Without a cache option (including `{}` or `cacheContract: undefined`), no cache compilation runs and the existing result type stays unchanged. Explicit cache options infer `CommandInvalidationResult<T>`; dynamic `CommandOptions` infer a union that can be narrowed with `'cacheInvalidation' in result`. The logical `impact` field always remains ImpactSet v1. The separate `commandWithInvalidations()` method from prerelease .0 has been removed in .1.
+An opaque endpoint still executes with the parsed value, while its manifest drops input bindings. A matching write therefore produces an `all` selector for that endpoint. The client remains free to map the logical target to TanStack Query, Apollo, Relay, RTK Query, or another cache.
 
-Each contract must cover registered reads or explicitly exclude them (`no-store` / `not-consumed`); coverage is checked at construction. `cacheInvalidationOptions` accepts compiler budgets and an `explain` callback. Scope and contract version are captured before awaiting command work.
-
-The selected contract is resolved before the transaction starts. After commit, `ImpactUnavailableError.data` is **always the business result**, with or without the cache output option. `phase` is `impact-calculation` or `cache-invalidation`; `impact` is present if impact calculation succeeded. Preserve this metadata in your transport. Do not retry the command or roll back optimistic business state because post-commit calculation/compilation failed. Arrange a conservative client resync separately.
+After commit, `ImpactUnavailableError.data` preserves the business result if impact calculation fails. Preserve this metadata in your transport; retrying the command can repeat an already committed write.
 
 Adapter authors use the stable contract exported by `@server-driven-impact/runtime/adapter`. Diagnostic helpers are exported by `@server-driven-impact/runtime/debug`. Node.js 22.18 or newer is required.
 

@@ -2,11 +2,15 @@ import { createHash } from 'node:crypto';
 import { canonical } from '@server-driven-impact/core';
 import type { Transaction } from './tracked-db.js';
 
-export interface CatalogStamp { schemas: readonly string[]; fingerprint: string }
+export interface CatalogStamp {
+  schemas: readonly string[];
+  fingerprint: string;
+}
 
 /** Catalog definitions only: never reads application rows or sequence values. */
 export async function catalogFingerprint(database: Transaction, schemas: readonly string[]): Promise<string> {
-  const rows = await database.unsafe(`
+  const rows = await database.unsafe(
+    `
     with namespaces as (select oid from pg_namespace where nspname=any($1::text[])),
     objects as (
       select 'relation' as kind,c.oid::text as id,jsonb_build_object('name',c.relname,'namespace',c.relnamespace,'owner',c.relowner,
@@ -28,6 +32,10 @@ export async function catalogFingerprint(database: Transaction, schemas: readonl
       union all select 'extension',e.oid::text,to_jsonb(e) from pg_extension e
       union all select 'namespace',n.oid::text,to_jsonb(n) from pg_namespace n where n.oid in (select oid from namespaces)
       union all select 'environment',d.oid::text,jsonb_build_object('server',current_setting('server_version_num'),'encoding',d.encoding,'collate',d.datcollate,'ctype',d.datctype,'provider',to_jsonb(d)->'datlocprovider','collationVersion',to_jsonb(d)->'datcollversion') from pg_database d where d.datname=current_database()
-    ) select kind,id,md5(definition::text) as hash from objects order by kind,id`, [[...schemas]]);
-  return createHash('sha256').update(canonical([...rows])).digest('hex');
+    ) select kind,id,md5(definition::text) as hash from objects order by kind,id`,
+    [[...schemas]],
+  );
+  return createHash('sha256')
+    .update(canonical([...rows]))
+    .digest('hex');
 }

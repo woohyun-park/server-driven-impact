@@ -15,7 +15,10 @@ describe('PostgreSQL driver result contract', () => {
       new WriteSet(),
       null,
       { rows: { table: 'rows', idColumn: 'id', scopeColumn: null, columns: ['id'] } },
-      async () => { executions++; return result; },
+      async () => {
+        executions++;
+        return result;
+      },
     );
 
     expect(await tracked.execute(new Sql('update rows set id=id'))).toBe(result);
@@ -31,39 +34,66 @@ function driverResultTypes(pg: PgCommandDb, postgres: PostgresCommandDb) {
   void pg.execute(sql`update rows set id=id`).then(result => {
     const rowCount: number | null = result.rowCount;
     const rows: Record<string, unknown>[] = result.rows;
-    void rowCount; void rows;
-  });
-  void pg.savepoint(db => db.execute(sql`select 1`)).then(result => {
-    const rowCount: number | null = result.rowCount;
     void rowCount;
+    void rows;
   });
+  void pg
+    .savepoint(db => db.execute(sql`select 1`))
+    .then(result => {
+      const rowCount: number | null = result.rowCount;
+      void rowCount;
+    });
   void postgres.execute(sql`update rows set id=id`).then(result => {
     const count: number = result.count;
     const rows: Record<string, unknown>[] = result;
-    void count; void rows;
+    void count;
+    void rows;
   });
 }
 void driverResultTypes;
 
 it('snapshots stream SQL before async validation to prevent post-validation mutation', async () => {
   const executed: string[] = [];
-  const tracked = new TrackedDb({unsafe:(text:string)=>{
-    executed.push(text);
-    return {
-      async writable() {return new Writable({write(_chunk,_encoding,done){done();}});},
-      async readable() {return Readable.from(['row']);},
-      async *cursor() {yield [{id:'one'}];},
-    };
-  }} as never,new WriteSet(),null,{});
+  const tracked = new TrackedDb(
+    {
+      unsafe: (text: string) => {
+        executed.push(text);
+        return {
+          async writable() {
+            return new Writable({
+              write(_chunk, _encoding, done) {
+                done();
+              },
+            });
+          },
+          async readable() {
+            return Readable.from(['row']);
+          },
+          async *cursor() {
+            yield [{ id: 'one' }];
+          },
+        };
+      },
+    } as never,
+    new WriteSet(),
+    null,
+    {},
+  );
   const input = new Sql('copy rows from stdin');
-  const copying = tracked.copyFrom(input,['one\n']);
-  Object.assign(input,{text:'commit'});
+  const copying = tracked.copyFrom(input, ['one\n']);
+  Object.assign(input, { text: 'commit' });
   await copying;
   const output = new Sql('copy rows to stdout');
   const reading = tracked.copyTo(output)[Symbol.asyncIterator]();
-  const first = reading.next(); Object.assign(output,{text:'rollback'}); await first; await reading.return?.();
+  const first = reading.next();
+  Object.assign(output, { text: 'rollback' });
+  await first;
+  await reading.return?.();
   const select = new Sql('select 1');
   const cursor = tracked.cursor(select)[Symbol.asyncIterator]();
-  const next = cursor.next(); Object.assign(select,{text:'commit'}); await next; await cursor.return?.();
-  expect(executed).toEqual(['copy rows from stdin','copy rows to stdout','select 1']);
+  const next = cursor.next();
+  Object.assign(select, { text: 'commit' });
+  await next;
+  await cursor.return?.();
+  expect(executed).toEqual(['copy rows from stdin', 'copy rows to stdout', 'select 1']);
 });
