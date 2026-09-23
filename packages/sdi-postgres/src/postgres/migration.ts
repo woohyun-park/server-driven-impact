@@ -41,10 +41,17 @@ export async function migratePostgresArtifacts(
       resources: resolved,
       fingerprint: observerFingerprint(resolved, manifest),
       impact: {
-        protocolVersion: 1,
-        targets: Object.keys(manifest.reads)
-          .sort()
-          .map(endpoint => ({ endpoint, scope: 'global', selector: { kind: 'all' } })),
+        endpoints: Object.fromEntries(
+          Object.keys(manifest.reads)
+            .sort()
+            .map(endpoint => [
+              endpoint,
+              {
+                status: 'verified' as const,
+                targets: [{ scope: 'global' as const, selector: { kind: 'all' as const } }],
+              },
+            ]),
+        ),
       },
     };
   });
@@ -72,10 +79,17 @@ export async function migratePostgresQueries(
       ...artifact,
       fingerprint: observerFingerprint(artifact.resources, artifact.manifest),
       impact: {
-        protocolVersion: 1 as const,
-        targets: Object.keys(definitions)
-          .sort()
-          .map(endpoint => ({ endpoint, scope: 'global' as const, selector: { kind: 'all' as const } })),
+        endpoints: Object.fromEntries(
+          Object.keys(definitions)
+            .sort()
+            .map(endpoint => [
+              endpoint,
+              {
+                status: 'verified' as const,
+                targets: [{ scope: 'global' as const, selector: { kind: 'all' as const } }],
+              },
+            ]),
+        ),
       },
     };
   });

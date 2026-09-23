@@ -66,12 +66,12 @@ const { data, impact } = await engine.command({ scope: 'account-a' }, db =>
 );
 
 console.log(data.count); // postgres.js: number
-console.log(impact.targets);
+console.log(impact.endpoints);
 ```
 
-For `pgAdapter`, use `data.rowCount`; it remains `number | null` in TypeScript. The driver's processed-row count is the command tag's count, not the number of rows whose stored values changed. For example, updating one matching row to its existing value can report a count of `1` while `impact.targets` is empty because no observable row value changed. SQLSTATE and other execution failures remain driver error objects and are separate from successful execution results. The same result type is preserved through `savepoint()`, and a committed result is retained in `ImpactUnavailableError.data` if post-commit impact conversion fails.
+For `pgAdapter`, use `data.rowCount`; it remains `number | null` in TypeScript. The driver's processed-row count is the command tag's count, not the number of rows whose stored values changed. For example, updating one matching row to its existing value can report a count of `1` while each verified endpoint has empty `targets` because no observable row value changed. SQLSTATE and other execution failures remain driver error objects and are separate from successful execution results. The same result type is preserved through `savepoint()`, and a committed result is retained in `CommandResult.data` if post-commit impact conversion fails.
 
-The table must already exist, the runtime role must have its normal table privileges, and its row-level security policy must use the same scope established by `setup`. Generate and apply the observer migration with schema-owner credentials, then call `engine.validate()` at the application's startup, deployment, or health-check boundary. The first Command on a bound adapter also performs and caches this validation so protocol 10 cannot run against a stale observer; later Query and Command execution does not repeat it.
+The table must already exist, the runtime role must have its normal table privileges, and its row-level security policy must use the same scope established by `setup`. Generate and apply the observer migration with schema-owner credentials, then call `engine.validate()` at the application's startup, deployment, or health-check boundary. The first Command on a bound adapter also performs and caches this validation and returns validation failures as endpoint assessments while still attempting the write; later Query and Command execution does not repeat it.
 
 The conformance suite covers PostgreSQL 14–18 with postgres.js and pg, plus PgBouncer transaction pooling. Opaque dynamic SQL dependency inference, external I/O observation, autonomous procedures, held cursors, and two-phase commit are outside the atomic Command contract. The detailed contract is in the [PostgreSQL compatibility guide](https://github.com/woohyun-park/server-driven-impact/blob/main/spec/server-driven-impact/postgres-compatibility.md).
 
@@ -133,3 +133,5 @@ Compiler and validator share policy proofs in catalog artifacts. Regenerate and
 reinstall artifacts after this upgrade and after policy/function/role changes.
 Existing catalog fingerprints include policies, functions, owners, role membership
 and RLS flags. SDI does not change PostgreSQL's MVCC or policy concurrency semantics.
+
+Validation returns a `ValidationReport`; the first command pins and caches a snapshot until explicit `validate()`. It does not detect later DDL. Handle endpoint status on every response: apply verified/conservative targets, and invalidate or stop reusing unavailable endpoint caches. [Endpoint assessment migration](../../docs/migrations/endpoint-assessment.md).

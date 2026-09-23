@@ -110,10 +110,10 @@ const { data, impact } = await engine.command(
 );
 
 console.log(data.count); // postgres.js: number
-console.log(impact.targets);
+console.log(impact.endpoints);
 ```
 
-`pgAdapter`에서는 `data.rowCount`를 사용하며 TypeScript 타입은 `number | null`입니다. 이 값은 실제 값이 달라진 행의 수가 아니라 PostgreSQL 명령 태그가 보고한 처리 행 수입니다. 따라서 한 행을 같은 값으로 갱신하면 처리 행 수는 `1`이어도 관찰 가능한 값이 바뀌지 않아 `impact.targets`는 비어 있을 수 있습니다. SQLSTATE 같은 실행 실패 정보는 성공 결과와 별개인 드라이버 오류 객체로 유지됩니다. `savepoint()` 안에서도 같은 결과 타입이 이어지며, 커밋 뒤 impact 변환이 실패하면 원본 결과가 `ImpactUnavailableError.data`에 보존됩니다.
+`pgAdapter`에서는 `data.rowCount`를 사용하며 TypeScript 타입은 `number | null`입니다. 이 값은 실제 값이 달라진 행의 수가 아니라 PostgreSQL 명령 태그가 보고한 처리 행 수입니다. 따라서 한 행을 같은 값으로 갱신하면 처리 행 수는 `1`이어도 관찰 가능한 값이 바뀌지 않아 각 verified endpoint의 `targets`는 비어 있을 수 있습니다. SQLSTATE 같은 실행 실패 정보는 성공 결과와 별개인 드라이버 오류 객체로 유지됩니다. `savepoint()` 안에서도 같은 결과 타입이 이어지며, 커밋 뒤 impact 변환이 실패하면 원본 결과가 `CommandResult.data`에 보존됩니다.
 
 테이블은 미리 존재해야 하며 runtime role에는 일반적인 테이블 권한이 필요합니다. RLS 정책은 `setup`에서 설정한 scope와 같은 기준을 사용해야 합니다.
 
@@ -183,3 +183,5 @@ compiler와 validator는 artifact의 정책 분석 근거를 공유합니다. �
 정책·함수·역할 변경 후 artifact를 재생성·설치해야 합니다. 기존 fingerprint가
 정책·함수·소유자·역할 상속·RLS 상태 변경을 감지합니다. SDI는 PostgreSQL의 MVCC나
 다른 행을 참조하는 정책 자체의 동시성 문제를 변경하지 않습니다.
+
+검증은 `ValidationReport`를 반환합니다. 첫 command가 고정한 검증 스냅샷은 명시적 `validate()`까지 재사용하며, 검증 이후 DDL은 감지하지 않습니다. 매 응답의 endpoint 상태를 처리해야 합니다. `unavailable`에는 targets가 없으며 해당 endpoint의 캐시를 무효화하거나 재사용을 중단해야 합니다. [endpoint별 impact 변경 안내](../../docs/migrations/endpoint-assessment.md).

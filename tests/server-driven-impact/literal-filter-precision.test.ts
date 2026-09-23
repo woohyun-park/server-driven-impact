@@ -1,3 +1,4 @@
+import { affectedTargets } from './impact-assertions.js';
 import { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it } from 'vitest';
 import {
@@ -18,7 +19,6 @@ const resources: Resources = {
   records: { table: 'records', idColumn: 'id', scopeColumn: null, columns: ['id', 'status', 'customer', 'value'] },
 };
 const manifest = {
-  protocolVersion: 1 as const,
   reads: {
     ready: [{ resource: 'records', columns: ['id'], bindings: [], filters: [{ column: 'status', value: 'ready' }] }],
   },
@@ -74,7 +74,7 @@ describe('necessary literal equality filters', () => {
   it('requires certified values and evaluates OLD/NEW separately when a row enters or leaves a filter', () => {
     const core = createCore({ resources, manifest });
     expect(core.explain([inserted(known('draft'))], null)).toEqual({
-      impact: { protocolVersion: 1, targets: [] },
+      impact: { endpoints: { ready: { status: 'verified', targets: [] } } },
       decisions: [{ resource: 'records', endpoint: 'ready', reason: 'filter-excluded' }],
     });
     for (const state of [
@@ -82,7 +82,7 @@ describe('necessary literal equality filters', () => {
       { kind: 'unknown' } as RowState,
       { kind: 'known', scope: null, fields: {}, equalityFields: {} } as RowState,
     ]) {
-      expect(core.calculate([inserted(state)], null).targets).toHaveLength(1);
+      expect(affectedTargets(core.calculate([inserted(state)], null))).toHaveLength(1);
     }
     for (const [before, after] of [
       ['ready', 'draft'],
@@ -95,21 +95,23 @@ describe('necessary literal equality filters', () => {
         after: known(after),
         changedColumns: ['status'],
       };
-      expect(core.calculate([moved], null).targets).toHaveLength(1);
+      expect(affectedTargets(core.calculate([moved], null))).toHaveLength(1);
     }
     expect(
-      core.calculate(
-        [
-          {
-            resource: 'records',
-            operation: 'update',
-            before: known('draft'),
-            after: known('archived'),
-            changedColumns: ['status'],
-          },
-        ],
-        null,
-      ).targets,
+      affectedTargets(
+        core.calculate(
+          [
+            {
+              resource: 'records',
+              operation: 'update',
+              before: known('draft'),
+              after: known('archived'),
+              changedColumns: ['status'],
+            },
+          ],
+          null,
+        ),
+      ),
     ).toEqual([]);
   });
   it.each<[Scalar, Scalar]>([
@@ -123,7 +125,6 @@ describe('necessary literal equality filters', () => {
     [null, null],
   ])('keeps possible SQL equality for certified %s and literal %s', (actual, expected) => {
     const policy = {
-      protocolVersion: 1 as const,
       reads: {
         filtered: [
           {
@@ -136,7 +137,7 @@ describe('necessary literal equality filters', () => {
       },
     };
     expect(
-      calculateImpact([inserted(known(actual))], { resources, manifest: policy, scope: null }).targets,
+      affectedTargets(calculateImpact([inserted(known(actual))], { resources, manifest: policy, scope: null })),
     ).toHaveLength(1);
   });
   it('bounds derived filters and validates persisted filter columns and values', () => {
@@ -179,17 +180,17 @@ describe('necessary literal equality filters', () => {
     const writes = new WriteSet();
     writes.add(Array.from({ length: LIMITS.facts + 1 }, () => inserted(known('draft'))));
     expect(writes.snapshot()).toHaveLength(1);
-    expect(calculateImpact(writes.snapshot(), { resources, manifest, scope: null }).targets).toEqual([]);
+    expect(affectedTargets(calculateImpact(writes.snapshot(), { resources, manifest, scope: null }))).toEqual([]);
     writes.add([inserted(known('ready'))]);
-    expect(calculateImpact(writes.snapshot(), { resources, manifest, scope: null }).targets).toHaveLength(1);
+    expect(affectedTargets(calculateImpact(writes.snapshot(), { resources, manifest, scope: null }))).toHaveLength(1);
     writes.add([inserted(known('draft'))]);
-    expect(calculateImpact(writes.snapshot(), { resources, manifest, scope: null }).targets).toHaveLength(1);
+    expect(affectedTargets(calculateImpact(writes.snapshot(), { resources, manifest, scope: null }))).toHaveLength(1);
     const unproved = new WriteSet();
     unproved.add([
       inserted(known('draft', false)),
       ...Array.from({ length: LIMITS.facts }, () => inserted(known('draft'))),
     ]);
-    expect(calculateImpact(unproved.snapshot(), { resources, manifest, scope: null }).targets).toHaveLength(1);
+    expect(affectedTargets(calculateImpact(unproved.snapshot(), { resources, manifest, scope: null }))).toHaveLength(1);
   });
 });
 
@@ -215,26 +216,27 @@ describe('literal filters against actual SQLite comparison semantics', () => {
         tx.execute("insert into records values('one','draft','a',1)"),
       );
       expect(await engine.query('ready', { customer: 'a' }, context)).toEqual([]);
-      expect(unrelated.impact.targets).toEqual([]);
+      expect(affectedTargets(unrelated.impact)).toEqual([]);
       const entered = await engine.command(context, tx =>
         tx.execute("update records set status='ready' where id='one'"),
       );
       expect(await engine.query('ready', { customer: 'a' }, context)).toEqual([{ id: 'one' }]);
-      expect(entered.impact.targets[0].selector).toEqual({ kind: 'inputs', values: [{ customer: 'a' }] });
+      expect(affectedTargets(entered.impact)[0].selector).toEqual({ kind: 'inputs', values: [{ customer: 'a' }] });
       const left = await engine.command(context, tx =>
         tx.execute("update records set status='archived' where id='one'"),
       );
       expect(await engine.query('ready', { customer: 'a' }, context)).toEqual([]);
-      expect(left.impact.targets[0].selector).toEqual({ kind: 'inputs', values: [{ customer: 'a' }] });
+      expect(affectedTargets(left.impact)[0].selector).toEqual({ kind: 'inputs', values: [{ customer: 'a' }] });
       expect(
-        (await engine.command(context, tx => tx.execute("update records set status='draft' where id='one'"))).impact
-          .targets,
+        affectedTargets(
+          (await engine.command(context, tx => tx.execute("update records set status='draft' where id='one'"))).impact,
+        ),
       ).toEqual([]);
       const first = await engine.command(context, tx =>
         tx.execute("insert into records values('first','ready','b',1)"),
       );
       expect(await engine.query('ready', { customer: 'b' }, context)).toEqual([{ id: 'first' }]);
-      expect(first.impact.targets[0].selector).toEqual({ kind: 'inputs', values: [{ customer: 'b' }] });
+      expect(affectedTargets(first.impact)[0].selector).toEqual({ kind: 'inputs', values: [{ customer: 'b' }] });
     } finally {
       database.close();
     }
@@ -264,7 +266,7 @@ describe('literal filters against actual SQLite comparison semantics', () => {
         tx.execute('insert into records values(?,?,?,?)', ['one', stored, 'a', 1]),
       );
       expect(await engine.query('filtered', {}, context)).toEqual([{ id: 'one' }]);
-      expect(result.impact.targets.some(target => target.endpoint === 'filtered')).toBe(true);
+      expect(affectedTargets(result.impact).some(target => target.endpoint === 'filtered')).toBe(true);
       expect(await engine.query('nullValue', {}, context)).toEqual([]);
       await engine.command(context, tx => tx.execute('update records set status=null'));
       expect(await engine.query('nullValue', {}, context)).toEqual([]);

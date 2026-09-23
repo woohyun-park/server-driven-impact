@@ -1,3 +1,4 @@
+import { affectedTargets } from './impact-assertions.js';
 import { afterEach, describe, expect, it } from 'vitest';
 import { DatabaseSync } from 'node:sqlite';
 import { createImpact, q, type Resources } from '@server-driven-impact/runtime';
@@ -50,7 +51,7 @@ describe('SQLite native statement lifecycle and collection', () => {
       return tx.prepare('select * from rows').all();
     });
     expect(result.data).toHaveLength(1);
-    expect(result.impact.targets.find(t => t.endpoint === 'list')?.selector).toEqual({
+    expect(affectedTargets(result.impact).find(t => t.endpoint === 'list')?.selector).toEqual({
       kind: 'inputs',
       values: [{ customer: 'a' }],
     });
@@ -77,14 +78,14 @@ describe('SQLite native statement lifecycle and collection', () => {
     const first = await engine.command({ scope: null }, async tx =>
       tx.prepare('insert into rows values(?,?)').run('one', 'customer'),
     );
-    expect(first.impact.targets.find(t => t.endpoint === 'list')?.selector).toEqual({
+    expect(affectedTargets(first.impact).find(t => t.endpoint === 'list')?.selector).toEqual({
       kind: 'inputs',
       values: [{ customer: 'customer' }],
     });
     const second = await byId.command({ scope: null }, async tx =>
       tx.prepare('update rows set customer=? where id=?').run('next', 'one'),
     );
-    expect(second.impact.targets[0].selector).toEqual({ kind: 'inputs', values: [{ id: 'one' }] });
+    expect(affectedTargets(second.impact)[0].selector).toEqual({ kind: 'inputs', values: [{ id: 'one' }] });
   });
   it('rejects UPDATE OR REPLACE before a conflicting row can disappear without an observer event', async () => {
     const { engine, database } = fixture();
@@ -116,10 +117,13 @@ describe('SQLite native statement lifecycle and collection', () => {
       const insert = tx.prepare('insert into rows values(?,?)');
       for (let i = 0; i < 250; i++) insert.run(String(i), 'many');
     });
-    const note = result.impact.targets.find(t => t.endpoint === 'note')!;
+    const note = affectedTargets(result.impact).find(t => t.endpoint === 'note')!;
     expect(note.selector).toEqual({ kind: 'inputs', values: [{ id: 'single' }] });
     expect(
-      matchesInputSelector({ customer: 'many' }, result.impact.targets.find(t => t.endpoint === 'list')!.selector),
+      matchesInputSelector(
+        { customer: 'many' },
+        affectedTargets(result.impact).find(t => t.endpoint === 'list')!.selector,
+      ),
     ).toBe(true);
   });
 });

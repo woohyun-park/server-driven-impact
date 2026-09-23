@@ -119,8 +119,22 @@ async function measure(definition) {
     assert.equal(count, definition.rowCount);
     record.impactBytes = definition.observed ? Buffer.byteLength(JSON.stringify(response.impact)) : 0;
     record.responseBytes = Buffer.byteLength(JSON.stringify(response));
-    record.selectorKinds = definition.observed ? response.impact.targets.map(target => target.selector.kind) : [];
-    if (definition.observed) assert(response.impact.targets.length > 0, 'MISSING_OBSERVED_IMPACT');
+    record.selectorKinds = definition.observed
+      ? Object.values(response.impact.endpoints)
+          .flatMap(endpoint => {
+            if (endpoint.status === 'unavailable') throw new Error('UNAVAILABLE_IMPACT');
+            return endpoint.targets;
+          })
+          .map(target => target.selector.kind)
+      : [];
+    if (definition.observed)
+      assert(
+        Object.values(response.impact.endpoints).flatMap(endpoint => {
+          if (endpoint.status === 'unavailable') throw new Error('UNAVAILABLE_IMPACT');
+          return endpoint.targets;
+        }).length > 0,
+        'MISSING_OBSERVED_IMPACT',
+      );
     assert.equal(record.acquisitions, 1, 'COMMAND_DID_NOT_HOLD_EXACTLY_ONE_CONNECTION');
     assert.equal(record.businessSelects, 0, 'INVERSE_BUSINESS_SELECT_DETECTED');
     return record;

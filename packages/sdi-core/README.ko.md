@@ -24,7 +24,6 @@ const resources: ImpactResources = {
 };
 
 const manifest: ImpactManifest = {
-  protocolVersion: 1,
   reads: {
     'todos.byStatus': [{
       resource: 'todos',
@@ -75,4 +74,6 @@ console.log(calculateImpact(writes, {
 
 Node.js 22.18 이상이 필요합니다.
 
-WriteSet은 상한을 넘긴 resource부터 요약하고 제한된 크기 안에서 OLD/NEW 공통 scope·field를 보존합니다. selector 개수 상한은 공통 조건을 유지하고, byte 상한은 개별 target부터 확장합니다. `createImpact().command()`는 adapter의 COMMIT·기록 회수 후 계산하며, commit 이후 계산 실패를 `ImpactUnavailableError`로 구분합니다. [의미 명세](../../spec/server-driven-impact/semantics.md).
+WriteSet은 상한을 넘긴 resource부터 요약하고 제한된 크기 안에서 OLD/NEW 공통 scope·field를 보존합니다. selector 개수 상한은 공통 조건을 유지하고, byte 상한은 개별 target부터 확장합니다. `createImpact().command()`는 adapter의 COMMIT·기록 회수 후 계산하며, commit 이후 계산 실패를 endpoint의 `unavailable` 상태로 구분합니다. [의미 명세](../../spec/server-driven-impact/semantics.md).
+
+순수 계산기는 DB를 검증하지 않습니다. manifest 의존성과 변경 사실의 완전성은 호출자·adapter의 책임입니다. runtime adapter가 검증 스냅샷을 고정하고 endpoint별 상태를 반환합니다. 매 command 응답에서 unavailable endpoint를 처리해야 합니다. [endpoint별 impact 변경 안내](../../docs/migrations/endpoint-assessment.md).

@@ -1,3 +1,4 @@
+import { affectedTargets } from './impact-assertions.js';
 import { describe, it, expect, afterEach } from 'vitest';
 import { DatabaseSync } from 'node:sqlite';
 import { matchesInputSelector, type ImpactSet } from '@server-driven-impact/core';
@@ -49,7 +50,7 @@ const update = (
 const remove = (db: SqliteCommandDb, table: string, where: string, values: readonly (null | string | number)[] = []) =>
   db.execute(`delete from ${table} where ${where} returning *`, values);
 function includes(impact: ImpactSet, endpoint: string, input: Record<string, unknown>) {
-  return impact.targets.some(t => t.endpoint === endpoint && matchesInputSelector(input, t.selector));
+  return affectedTargets(impact).some(t => t.endpoint === endpoint && matchesInputSelector(input, t.selector));
 }
 describe('unified API / actual SQLite', () => {
   it('exposes only the native transaction operations', async () => {
@@ -105,16 +106,19 @@ describe('unified API / actual SQLite', () => {
     });
     expect(JSON.stringify(result.impact)).not.toContain('discarded');
     expect(
-      (await engine.command(context, db => update(db, 'orders', 'status=?', 'id=?', ['draft', 'missing']))).impact
-        .targets,
+      affectedTargets(
+        (await engine.command(context, db => update(db, 'orders', 'status=?', 'id=?', ['draft', 'missing']))).impact,
+      ),
     ).toEqual([]);
     expect(
-      (await engine.command(context, db => update(db, 'orders', 'status=?', 'id=?', ['ready', 'kept']))).impact.targets,
+      affectedTargets(
+        (await engine.command(context, db => update(db, 'orders', 'status=?', 'id=?', ['ready', 'kept']))).impact,
+      ),
     ).toEqual([]);
     expect(
-      (
-        await engine.command(context, db => update(db, 'orders', 'note=?', 'id=?', ['private', 'kept']))
-      ).impact.targets.map(t => t.endpoint),
+      affectedTargets(
+        (await engine.command(context, db => update(db, 'orders', 'note=?', 'id=?', ['private', 'kept']))).impact,
+      ).map(t => t.endpoint),
     ).toEqual(['orders.detail']);
   });
   it('commit failure publishes no result, and a caught failed write cannot commit earlier writes', async () => {
@@ -150,7 +154,7 @@ describe('unified API / actual SQLite', () => {
       ),
     );
     results.forEach((result, i) => {
-      expect(result.impact.targets.find(t => t.endpoint === 'orders.list')?.selector).toEqual({
+      expect(affectedTargets(result.impact).find(t => t.endpoint === 'orders.list')?.selector).toEqual({
         kind: 'inputs',
         values: [{ customer: 'customer' + i }],
       });
@@ -195,7 +199,7 @@ describe('unified API / actual SQLite', () => {
     );
     const bulk = await engine.command(context, db => update(db, 'orders', 'status=?', 'true', ['draft']));
     expect(bulk.data).toHaveLength(211);
-    expect(bulk.impact.targets.every(t => t.selector.kind === 'all')).toBe(true);
+    expect(affectedTargets(bulk.impact).every(t => t.selector.kind === 'all')).toBe(true);
   });
   it('preserves every changed resource when one command exceeds the fact budget', async () => {
     const { adapter, resources } = fixture();
@@ -216,8 +220,8 @@ describe('unified API / actual SQLite', () => {
       );
       await insert(db, 'order_items', [{ id: 'overflow-item', tenant_id: 'a', order_id: 'overflow-0', amount: 1 }]);
     });
-    expect(result.impact.targets.map(target => target.endpoint)).toEqual(['itemOnly', 'orderOnly']);
-    expect(result.impact.targets.every(target => target.selector.kind === 'all')).toBe(true);
+    expect(affectedTargets(result.impact).map(target => target.endpoint)).toEqual(['itemOnly', 'orderOnly']);
+    expect(affectedTargets(result.impact).every(target => target.selector.kind === 'all')).toBe(true);
   });
   it('executes count, OR/NOT and input pagination in the database', async () => {
     const { adapter, resources } = fixture();
@@ -263,7 +267,7 @@ describe('unified API / actual SQLite', () => {
     const changed = await engine.command(context, db =>
       insert(db, 'order_items', [{ id: 'i', tenant_id: 'a', order_id: 'one', amount: 1 }]),
     );
-    expect(changed.impact.targets.map(t => t.endpoint)).toEqual(['sample']);
+    expect(affectedTargets(changed.impact).map(t => t.endpoint)).toEqual(['sample']);
     expect(describeQueries(resources, queries).sources.sample).toEqual(['items']);
   });
   it('rejects missing adapters, arbitrary manifests, unknown endpoints and SQL injection', async () => {
@@ -299,7 +303,7 @@ describe('unified API / actual SQLite', () => {
       ]),
     );
     expect(includes(result.impact, 'orders.list', { customer: 'first' })).toBe(true);
-    expect(result.impact.targets.map(target => target.endpoint)).toContain('orders.detail');
+    expect(affectedTargets(result.impact).map(target => target.endpoint)).toContain('orders.detail');
     expect(await engine.query('orders.detail', { id: 'native' }, context)).toMatchObject([{ note: 'hidden' }]);
   });
   it('observes native identity changes and rejects operations it cannot observe safely', async () => {
@@ -363,9 +367,9 @@ describe('unified API / actual SQLite', () => {
     expect(includes(inserted.impact, 'number', { value: '1' })).toBe(true);
     expect(includes(inserted.impact, 'label', { value: 'WORK' })).toBe(true);
     const changed = await engine.command(context, db => update(db, 'values_table', 'label=?', 'id=?', ['WORK', 'one']));
-    expect(changed.impact.targets.map(target => target.endpoint)).toContain('label');
+    expect(affectedTargets(changed.impact).map(target => target.endpoint)).toContain('label');
   });
-  it('rejects schema-level REPLACE policies that can hide the deleted row', async () => {
+  it('reports schema-level REPLACE policies that can hide the deleted row', async () => {
     const database = new DatabaseSync(':memory:');
     databases.push(database);
     database.exec('create table unsafe(id text primary key on conflict replace,tenant text,value text)');
@@ -383,15 +387,18 @@ describe('unified API / actual SQLite', () => {
       resources,
       queries: defineQueries({ all: { input: { parse: () => ({}) }, plan: q.select('unsafe') } }),
     });
-    await expect(engine.validate()).rejects.toThrow('SQLITE_SCHEMA_REPLACE_UNSUPPORTED:unsafe');
+    expect((await engine.validate()).endpoints.all).toEqual({ status: 'unavailable', codes: ['RESOURCE_DRIFT'] });
   });
-  it('runs without implicit validation and performs fresh SQLite validation only when requested', async () => {
+  it('reuses implicit SQLite validation and refreshes it only when requested', async () => {
     const { engine, database } = fixture();
     await engine.command(context, db => insert(db, 'orders', [order('without-validation')]));
     expect(await engine.query('orders.detail', { id: 'without-validation' }, context)).toHaveLength(1);
-    await expect(engine.validate()).resolves.toBeUndefined();
+    expect(Object.values((await engine.validate()).endpoints).every(value => value.status === 'verified')).toBe(true);
     database.exec('alter table orders add column drift text');
     expect(await engine.query('orders.detail', { id: 'without-validation' }, context)).toHaveLength(1);
-    await expect(engine.validate()).rejects.toThrow('COLUMN_DRIFT:orders');
+    expect((await engine.validate()).endpoints['orders.list']).toEqual({
+      status: 'unavailable',
+      codes: ['RESOURCE_DRIFT'],
+    });
   });
 });

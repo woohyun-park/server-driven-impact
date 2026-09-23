@@ -7,7 +7,6 @@ import type { PostgresQueryPlan } from '@server-driven-impact/runtime';
 
 const resources: Resources = { rows: { table: 'rows', idColumn: 'id', scopeColumn: null, columns: ['id'] } };
 const manifest: QueryManifest = {
-  protocolVersion: 1,
   reads: { list: [{ resource: 'rows', columns: '*', bindings: [] }] },
 };
 
@@ -81,7 +80,7 @@ describe('PostgreSQL adapter round trips', () => {
     calls.length = 0;
     session.release.mockClear();
     const data = await adapter.command('tenant-a', new WriteSet(new Set(['rows'])), async () => 'saved');
-    expect(data).toBe('saved');
+    expect(data).toEqual({ data: 'saved', assessment: { endpoints: { list: { status: 'verified' } } } });
     const texts = calls.map(call => call.text);
     expect(texts).toHaveLength(5);
     expect(texts[0].split(';\n').map(statement => statement.split(' ')[0])).toEqual([

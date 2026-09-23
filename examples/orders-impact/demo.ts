@@ -26,8 +26,8 @@ try {
   );
   for (const customer of ['old', 'new'])
     if (
-      !result.impact.targets.some(
-        target => target.endpoint === 'orders.list' && matchesInputSelector({ customer }, target.selector),
+      !result.impact.endpoints['orders.list'].targets?.some(target =>
+        matchesInputSelector({ customer }, target.selector),
       )
     )
       throw new Error('MISSING_CUSTOMER_IMPACT');

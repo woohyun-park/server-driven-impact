@@ -2,83 +2,223 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
   "properties": {
-    "protocolVersion": {
-      "const": 1
-    },
-    "targets": {
-      "type": "array",
-      "items": {
-        "type": "object",
-        "properties": {
-          "endpoint": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 128
-          },
-          "scope": {
-            "enum": [
-              "caller",
-              "global"
-            ]
-          },
-          "selector": {
-            "oneOf": [
-              {
-                "type": "object",
-                "properties": {
-                  "kind": {
-                    "const": "all"
-                  }
-                },
-                "required": [
-                  "kind"
-                ],
-                "additionalProperties": false
+    "endpoints": {
+      "type": "object",
+      "maxProperties": 512,
+      "propertyNames": {
+        "minLength": 1,
+        "maxLength": 128
+      },
+      "additionalProperties": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "status": {
+                "const": "verified"
               },
-              {
-                "type": "object",
-                "properties": {
-                  "kind": {
-                    "const": "inputs"
-                  },
-                  "values": {
-                    "type": "array",
-                    "minItems": 1,
-                    "maxItems": 100,
-                    "items": {
-                      "type": "object",
-                      "additionalProperties": {
-                        "type": [
-                          "string",
-                          "number",
-                          "boolean",
-                          "null"
-                        ]
-                      }
+              "targets": {
+                "type": "array",
+                "maxItems": 2,
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "scope": {
+                      "enum": [
+                        "caller",
+                        "global"
+                      ]
+                    },
+                    "selector": {
+                      "oneOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "const": "all"
+                            }
+                          },
+                          "required": [
+                            "kind"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "const": "inputs"
+                            },
+                            "values": {
+                              "type": "array",
+                              "minItems": 1,
+                              "maxItems": 100,
+                              "items": {
+                                "type": "object",
+                                "additionalProperties": {
+                                  "type": [
+                                    "string",
+                                    "number",
+                                    "boolean",
+                                    "null"
+                                  ]
+                                }
+                              }
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "values"
+                          ],
+                          "additionalProperties": false
+                        }
+                      ]
                     }
-                  }
-                },
-                "required": [
-                  "kind",
-                  "values"
-                ],
-                "additionalProperties": false
+                  },
+                  "required": [
+                    "scope",
+                    "selector"
+                  ],
+                  "additionalProperties": false
+                }
               }
-            ]
+            },
+            "required": [
+              "status",
+              "targets"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "status": {
+                "const": "conservative"
+              },
+              "codes": {
+                "type": "array",
+                "minItems": 1,
+                "uniqueItems": true,
+                "items": {
+                  "enum": [
+                    "VALIDATION_FAILED",
+                    "CATALOG_DRIFT",
+                    "RESOURCE_DRIFT",
+                    "OBSERVER_UNVERIFIED",
+                    "PRECISION_REDUCED",
+                    "OBSERVATION_FAILED",
+                    "CALCULATION_FAILED"
+                  ]
+                }
+              },
+              "targets": {
+                "type": "array",
+                "maxItems": 2,
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "scope": {
+                      "enum": [
+                        "caller",
+                        "global"
+                      ]
+                    },
+                    "selector": {
+                      "oneOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "const": "all"
+                            }
+                          },
+                          "required": [
+                            "kind"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "const": "inputs"
+                            },
+                            "values": {
+                              "type": "array",
+                              "minItems": 1,
+                              "maxItems": 100,
+                              "items": {
+                                "type": "object",
+                                "additionalProperties": {
+                                  "type": [
+                                    "string",
+                                    "number",
+                                    "boolean",
+                                    "null"
+                                  ]
+                                }
+                              }
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "values"
+                          ],
+                          "additionalProperties": false
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "scope",
+                    "selector"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "required": [
+              "status",
+              "codes",
+              "targets"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "status": {
+                "const": "unavailable"
+              },
+              "codes": {
+                "type": "array",
+                "minItems": 1,
+                "uniqueItems": true,
+                "items": {
+                  "enum": [
+                    "VALIDATION_FAILED",
+                    "CATALOG_DRIFT",
+                    "RESOURCE_DRIFT",
+                    "OBSERVER_UNVERIFIED",
+                    "PRECISION_REDUCED",
+                    "OBSERVATION_FAILED",
+                    "CALCULATION_FAILED"
+                  ]
+                }
+              }
+            },
+            "required": [
+              "status",
+              "codes"
+            ],
+            "additionalProperties": false
           }
-        },
-        "required": [
-          "endpoint",
-          "scope",
-          "selector"
-        ],
-        "additionalProperties": false
+        ]
       }
     }
   },
   "required": [
-    "protocolVersion",
-    "targets"
+    "endpoints"
   ],
   "additionalProperties": false
 }

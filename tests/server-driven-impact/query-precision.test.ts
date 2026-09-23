@@ -1,3 +1,4 @@
+import { affectedTargets } from './impact-assertions.js';
 import { DatabaseSync } from 'node:sqlite';
 import { describe, expect, it } from 'vitest';
 import { calculateImpact, matchesInputSelector, type WriteFact } from '@server-driven-impact/core';
@@ -42,21 +43,21 @@ describe('Query Plan precision with real SQLite result comparisons', () => {
       const inserted = await engine.command(context, tx => tx.execute("insert into orders values('one','a','old',1)"));
       expect(await engine.query('count', { customer: 'a' }, context)).toBe(1);
       expect(
-        inserted.impact.targets.some(
+        affectedTargets(inserted.impact).some(
           target => target.endpoint === 'count' && matchesInputSelector({ customer: 'a' }, target.selector),
         ),
       ).toBe(true);
       const unobserved = await engine.command(context, tx => tx.execute("update orders set note='new',sort=2"));
       expect(await engine.query('count', { customer: 'a' }, context)).toBe(1);
-      expect(unobserved.impact.targets).toEqual([]);
+      expect(affectedTargets(unobserved.impact)).toEqual([]);
       expect(await engine.query('required', { customer: 'a' }, context)).toBe(0);
       const child = await engine.command(context, tx => tx.execute("insert into items values('child','one',10)"));
       expect(await engine.query('required', { customer: 'a' }, context)).toBe(1);
-      expect(child.impact.targets.map(target => target.endpoint)).toEqual(['required']);
+      expect(affectedTargets(child.impact).map(target => target.endpoint)).toEqual(['required']);
       const moved = await engine.command(context, tx => tx.execute("update orders set customer='b'"));
       expect(await engine.query('count', { customer: 'a' }, context)).toBe(0);
       expect(await engine.query('count', { customer: 'b' }, context)).toBe(1);
-      const selector = moved.impact.targets.find(target => target.endpoint === 'count')!.selector;
+      const selector = affectedTargets(moved.impact).find(target => target.endpoint === 'count')!.selector;
       expect(matchesInputSelector({ customer: 'a' }, selector)).toBe(true);
       expect(matchesInputSelector({ customer: 'b' }, selector)).toBe(true);
       expect(matchesInputSelector({ customer: 'c' }, selector)).toBe(false);
@@ -87,6 +88,6 @@ describe('Query Plan precision with real SQLite result comparisons', () => {
       changedColumns: ['order_id'],
     };
     const impact = calculateImpact([changed], { resources, manifest, scope: null });
-    expect(impact.targets[0].selector).toEqual({ kind: 'inputs', values: [{ order: 'a' }, { order: 'b' }] });
+    expect(affectedTargets(impact)[0].selector).toEqual({ kind: 'inputs', values: [{ order: 'a' }, { order: 'b' }] });
   });
 });

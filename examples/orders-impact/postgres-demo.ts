@@ -53,7 +53,7 @@ try {
       sql`insert into ${orders}(id,tenant_id,customer_id,status,priority,note) values(${'one'},${'pack-user'},${'old'},${'ready'},${1},${null})`,
     ),
   );
-  if (!result.impact.targets.some(target => target.endpoint === 'orders.list')) throw new Error('MISSING_IMPACT');
+  if (!result.impact.endpoints['orders.list'].targets?.length) throw new Error('MISSING_IMPACT');
   if (((await engine.query('orders.list', { customer: 'old' }, context)) as unknown[]).length !== 1)
     throw new Error('MISSING_QUERY_RESULT');
   console.log(`Standalone ${nodePool ? 'pg' : 'postgres.js'} Query, Command, observer and impact passed.`);

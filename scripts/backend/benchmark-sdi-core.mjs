@@ -7,7 +7,6 @@ if (!Number.isInteger(samples) || samples < 5 || samples > 1_000) throw new Erro
 for (const endpoints of [1, 32, 128]) {
   const resources = { records: { scopeColumn: 'tenant', columns: ['id', 'tenant', 'category'] } };
   const manifest = {
-    protocolVersion: 1,
     reads: Object.fromEntries(
       Array.from({ length: endpoints }, (_, index) => [
         `endpoint.${index}`,
@@ -47,7 +46,12 @@ for (const endpoints of [1, 32, 128]) {
       p50Ms: Number(percentile(0.5).toFixed(2)),
       p95Ms: Number(percentile(0.95).toFixed(2)),
       responseBytes: Buffer.byteLength(JSON.stringify(result)),
-      broadTargets: result.targets.filter(target => target.selector.kind === 'all').length,
+      broadTargets: Object.values(result.endpoints)
+        .flatMap(endpoint => {
+          if (endpoint.status === 'unavailable') throw new Error('UNAVAILABLE_IMPACT');
+          return endpoint.targets;
+        })
+        .filter(target => target.selector.kind === 'all').length,
     }),
   );
 }

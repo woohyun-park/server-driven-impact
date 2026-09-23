@@ -15,7 +15,6 @@ const resources: ImpactResources = {
   todos: { scopeColumn: 'account_id', columns: ['id', 'account_id', 'status'] },
 };
 const manifest: ImpactManifest = {
-  protocolVersion: 1,
   reads: {
     'todos.byStatus': [{
       resource: 'todos', columns: ['id', 'status'],
@@ -38,8 +37,10 @@ console.log(calculateImpact(writes, { resources, manifest, scope: 'account-a' })
 
 For diagnostics, `createImpact({ resources, manifest })` creates a reusable calculator whose `explain(writes, scope)` method returns the same `ImpactSet` together with the decisions made by the exact calculation path. This method belongs to the core calculator; the runtime engine does not expose `explain()`.
 
-Consumers should use `matchesInputSelector()` for protocol-1 matching. It treats exact JSON scalar equality as a match and conservatively covers finite numeric string coercion and SQLite's built-in `NOCASE` and `RTRIM` behavior.
+Consumers should use `matchesInputSelector()` for input-selector matching. It treats exact JSON scalar equality as a match and conservatively covers finite numeric string coercion and SQLite's built-in `NOCASE` and `RTRIM` behavior.
 
 Node.js 22.18 or newer is required.
 
-WriteSet compacts overflowing resources locally and retains bounded common OLD/NEW scope and fields. Selector count overflow keeps shared constraints; byte overflow widens individual targets. `createImpact().command()` calculates after adapter COMMIT/drain and classifies post-commit calculation failures as `ImpactUnavailableError`. [Protocol semantics](../../spec/server-driven-impact/semantics.md).
+WriteSet compacts overflowing resources locally and retains bounded common OLD/NEW scope and fields. Selector count overflow keeps shared constraints; byte overflow widens individual targets. `createImpact().command()` calculates after adapter COMMIT/drain and classifies post-commit calculation failures as endpoint `unavailable` status. [Protocol semantics](../../spec/server-driven-impact/semantics.md).
+
+The pure calculator does not validate a database. Callers/adapters must provide complete manifest dependencies and write facts. Runtime adapters pin validation snapshots and return per-endpoint status. Handle unavailable endpoints on every command response. [Endpoint assessment migration](../../docs/migrations/endpoint-assessment.md).

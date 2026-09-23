@@ -158,7 +158,7 @@
       "id": "commit-outcome-recovery",
       "status": "verified",
       "mode": "fault-injection-and-cache-retirement",
-      "fixture": "tests/write-access.test.ts#returns committed data through ImpactUnavailableError when impact conversion fails after commit"
+      "fixture": "tests/write-access.test.ts#returns committed data with unavailable endpoints when impact conversion fails after commit"
     },
     {
       "id": "native-representation-and-mvcc",

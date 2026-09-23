@@ -12,7 +12,12 @@ export type {
   ImpactResource,
   ImpactResources,
   ImpactSet,
-  ImpactTarget,
+  EndpointTarget,
+  EndpointImpact,
+  Assessment,
+  ValidationReport,
+  ImpactReasonCode,
+  CommandResult,
   ReadDependency,
   RowState,
   Scalar,
@@ -21,5 +26,4 @@ export type {
 } from './contracts.js';
 export * from './write-set.js';
 export * from './calculate.js';
-export { ImpactUnavailableError } from './errors.js';
-export type { ImpactUnavailableOptions } from './errors.js';
+export * from './assessment.js';

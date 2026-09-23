@@ -1,5 +1,5 @@
 import type { Transaction } from './tracked-db.js';
-import { canonical } from '@server-driven-impact/core';
+import { canonical, assessResource, mergeAssessment, type ValidationReport } from '@server-driven-impact/core';
 import { identityColumns, type QueryManifest, type Resources } from '@server-driven-impact/runtime/adapter';
 import { createPostgresCatalogResolver, type CatalogPolicyDependency } from './catalog-resolver.js';
 import { catalogFingerprint } from './catalog-fingerprint.js';
@@ -41,6 +41,7 @@ export async function validateCatalog(
   database: Transaction,
   resources: Resources,
   manifest?: QueryManifest,
+  report?: ValidationReport,
 ): Promise<ReadonlySet<string>> {
   const equalityResources = new Set<string>();
   const unsafeEqualityResources = new Set<string>();
@@ -92,7 +93,17 @@ export async function validateCatalog(
     for (const [endpoint, proofs] of Object.entries(manifest?.postgres?.policyProofs ?? {})) {
       const reads = manifest?.reads[endpoint];
       if (!reads) throw new Error('UNRESOLVED_RLS_DEPENDENCY');
-      for (const proof of proofs) verify(endpoint, reads, proof.dependencies);
+      for (const proof of proofs) {
+        try {
+          verify(endpoint, reads, proof.dependencies);
+        } catch (error) {
+          if (!report) throw error;
+          report.endpoints[endpoint] = mergeAssessment(report.endpoints[endpoint], {
+            status: 'unavailable',
+            codes: ['CATALOG_DRIFT'],
+          });
+        }
+      }
     }
   for (const [id, r] of Object.entries(resources)) {
     const rows = await database.unsafe(
@@ -106,22 +117,27 @@ export async function validateCatalog(
       [r.schema ?? 'public', r.table],
     );
     const row = rows[0];
+    const resourceMismatch = (message: string) => {
+      if (!report || !manifest) throw new Error(message);
+      assessResource(report, manifest, id, { status: 'unavailable', codes: ['RESOURCE_DRIFT'] });
+    };
     const expectedKind = r.postgresKind === 'materialized-view' ? 'm' : undefined;
     if (
       !row ||
       (expectedKind ? row.relkind !== expectedKind : !['r', 'p'].includes(row.relkind)) ||
       (row.relhasrules && row.relkind !== 'm')
     )
-      throw new Error(`UNSUPPORTED_TABLE:${id}`);
+      resourceMismatch(`UNSUPPORTED_TABLE:${id}`);
+    if (!row) throw new Error('CATALOG_DEPENDENCIES_UNVERIFIED');
     if (row.relispartition || row.inherited || row.relkind === 'p') {
-      if (!r.physicalRelations) throw new Error(`UNSUPPORTED_TABLE:${id}`);
+      if (!r.physicalRelations) resourceMismatch(`UNSUPPORTED_TABLE:${id}`);
       const resolved = await resolvePostgresResources(database, { [id]: { ...r, physicalRelations: undefined } });
       if (canonical(resolved[id].physicalRelations) !== canonical(r.physicalRelations))
-        throw new Error(`RELATION_TOPOLOGY_DRIFT:${id}`);
-    } else if (r.physicalRelations) throw new Error(`RELATION_TOPOLOGY_DRIFT:${id}`);
+        resourceMismatch(`RELATION_TOPOLOGY_DRIFT:${id}`);
+    } else if (r.physicalRelations) resourceMismatch(`RELATION_TOPOLOGY_DRIFT:${id}`);
     if (canonical([...row.pk].sort()) !== canonical([...identityColumns(r)].sort()))
-      throw new Error(`IDENTITY_DRIFT:${id}`);
-    if (canonical([...row.columns].sort()) !== canonical([...r.columns].sort())) throw new Error(`COLUMN_DRIFT:${id}`);
+      resourceMismatch(`IDENTITY_DRIFT:${id}`);
+    if (canonical([...row.columns].sort()) !== canonical([...r.columns].sort())) resourceMismatch(`COLUMN_DRIFT:${id}`);
     const boundColumns = new Set(
       Object.values(manifest?.reads ?? {})
         .flat()
@@ -131,10 +147,14 @@ export async function validateCatalog(
           ...(read.filters ?? []).map(filter => filter.column),
         ]),
     );
+    if (r.scopeColumn !== null) boundColumns.add(r.scopeColumn);
     const unsupported = ((row.nondeterministic_collations ?? []) as string[]).find((column: string) =>
       boundColumns.has(column),
     );
-    if (unsupported) throw new Error(`UNSUPPORTED_SELECTOR_COLLATION:${id}:${unsupported}`);
+    if (unsupported) {
+      if (!report || !manifest) throw new Error(`UNSUPPORTED_SELECTOR_COLLATION:${id}:${unsupported}`);
+      assessResource(report, manifest, id, { status: 'conservative', codes: ['PRECISION_REDUCED'] });
+    }
     if (!row.relrowsecurity && !row.relhasrules) equalityResources.add(id);
     if (row.relrowsecurity) {
       const pending = Object.entries(manifest?.reads ?? {}).filter(
@@ -153,7 +173,17 @@ export async function validateCatalog(
         }
         if (!manifest && dependencies.some(read => read.rowConstraint === 'all'))
           throw new Error(`UNRESOLVED_RLS_DEPENDENCY:${id}`);
-        for (const [, reads] of pending) verify(id, reads, dependencies);
+        for (const [endpoint, reads] of pending) {
+          try {
+            verify(id, reads, dependencies);
+          } catch (error) {
+            if (!report) throw error;
+            report.endpoints[endpoint] = mergeAssessment(report.endpoints[endpoint], {
+              status: 'unavailable',
+              codes: ['CATALOG_DRIFT'],
+            });
+          }
+        }
       }
     }
   }

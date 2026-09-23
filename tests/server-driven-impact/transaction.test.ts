@@ -1,8 +1,9 @@
+import { affectedTargets } from './impact-assertions.js';
 import { it, expect } from 'vitest';
 import { createImpact, WriteSet, type CommandAdapter } from '@server-driven-impact/core';
 const engine = createImpact({
   resources: { r: { scopeColumn: null, columns: ['id'] } },
-  manifest: { protocolVersion: 1, reads: { list: [{ resource: 'r', columns: '*', bindings: [] }] } },
+  manifest: { reads: { list: [{ resource: 'r', columns: '*', bindings: [] }] } },
 });
 it('engine response waits for the adapter commit and propagates commit rejection', async () => {
   let release!: () => void;
@@ -57,18 +58,17 @@ it('classifies core calculation failures after commit as impact unavailable with
       return data;
     },
   };
-  await expect(engine.command(adapter, { scope: null }, async () => ({ id: 'saved' }))).rejects.toMatchObject({
-    code: 'IMPACT_UNAVAILABLE',
+  await expect(engine.command(adapter, { scope: null }, async () => ({ id: 'saved' }))).resolves.toMatchObject({
     commitState: 'committed',
     data: { id: 'saved' },
-    cause: new Error('UNREGISTERED_RESOURCE'),
+    impact: { endpoints: { list: { status: 'unavailable', codes: ['CALCULATION_FAILED'] } } },
   });
 });
 
 it('uses the execution scope snapshot when the caller mutates context before commit', async () => {
   const scoped = createImpact({
     resources: { r: { scopeColumn: 'tenant', columns: ['id', 'tenant'] } },
-    manifest: { protocolVersion: 1, reads: { list: [{ resource: 'r', columns: '*', bindings: [] }] } },
+    manifest: { reads: { list: [{ resource: 'r', columns: '*', bindings: [] }] } },
   });
   const context = { scope: 'a' };
   const adapter: CommandAdapter<object> = {
@@ -91,5 +91,5 @@ it('uses the execution scope snapshot when the caller mutates context before com
     context.scope = 'b';
     return 'saved';
   });
-  expect(result.impact.targets).toEqual([{ endpoint: 'list', scope: 'caller', selector: { kind: 'all' } }]);
+  expect(affectedTargets(result.impact)).toEqual([{ endpoint: 'list', scope: 'caller', selector: { kind: 'all' } }]);
 });

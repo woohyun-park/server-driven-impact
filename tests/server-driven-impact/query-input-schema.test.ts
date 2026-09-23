@@ -1,3 +1,4 @@
+import { affectedTargets } from './impact-assertions.js';
 import { DatabaseSync } from 'node:sqlite';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
@@ -162,7 +163,9 @@ describe('query input relation', () => {
     const changed = await engine.command({ scope: null }, db =>
       db.execute('update profiles set username=? where id=?', ['alice-2', '1']),
     );
-    expect(changed.impact.targets).toEqual([{ endpoint: 'byUsername', scope: 'global', selector: { kind: 'all' } }]);
+    expect(affectedTargets(changed.impact)).toEqual([
+      { endpoint: 'byUsername', scope: 'global', selector: { kind: 'all' } },
+    ]);
   });
 
   it('propagates preservation through calls and widening through opaque callees', async () => {

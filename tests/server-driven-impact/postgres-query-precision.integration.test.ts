@@ -1,3 +1,4 @@
+import { affectedTargets } from './impact-assertions.js';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import postgres from 'postgres';
@@ -107,8 +108,10 @@ describe.skipIf(!enabled)('PostgreSQL automatic observed-column precision', () =
     });
     await engine.validate();
     const context = { scope: null };
-    const endpoints = (impact: { targets: { endpoint: string }[] }) =>
-      impact.targets.map(target => target.endpoint).sort();
+    const endpoints = (impact: import('@server-driven-impact/core').ImpactSet) =>
+      affectedTargets(impact)
+        .map(target => target.endpoint)
+        .sort();
     const read = () =>
       Promise.all([
         engine.query('detail', { id: 'one' }, context),
@@ -121,7 +124,7 @@ describe.skipIf(!enabled)('PostgreSQL automatic observed-column precision', () =
       tx.execute(sql`update ${identifier(schema)}.records set note='changed'`),
     );
     expect(await read()).toEqual(before);
-    expect(irrelevant.impact.targets).toEqual([]);
+    expect(affectedTargets(irrelevant.impact)).toEqual([]);
     const reordered = await engine.command(context, tx =>
       tx.execute(sql`update ${identifier(schema)}.records set rank=3 where id='one'`),
     );

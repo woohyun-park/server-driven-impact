@@ -1,3 +1,4 @@
+import { affectedTargets } from './impact-assertions.js';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import postgres from 'postgres';
@@ -70,6 +71,40 @@ describe.skipIf(!enabled)('RLS hidden row and column dependencies', () => {
     await admin.unsafe(`drop schema if exists "${schema}" cascade`);
     await admin.end();
   });
+  it('does not trust an old resource index after new RLS dependencies appear', async () => {
+    await admin.unsafe(`create table "${schema}".assessed(id text primary key);
+      create table "${schema}".unrelated(id text primary key);
+      create table "${schema}".hidden(id text primary key);
+      grant select,insert,update,delete on all tables in schema "${schema}" to routine_runtime;`);
+    const resources: Resources = {
+      assessed: { schema, table: 'assessed', idColumn: 'id', scopeColumn: null, columns: ['id'] },
+      unrelated: { schema, table: 'unrelated', idColumn: 'id', scopeColumn: null, columns: ['id'] },
+      controls,
+    };
+    const queries = {
+      assessed: { input, plan: q.select('assessed') },
+      unrelated: { input, plan: q.select('unrelated') },
+    };
+    await admin.unsafe(
+      generateObserverMigration(resources, compileManifest(queries, resources), { runtimeRole: 'routine_runtime' }),
+    );
+    const engine = createImpact({ adapter: postgresAdapter({ database }), resources, queries });
+    expect((await engine.validate()).endpoints.assessed.status).toBe('verified');
+    await admin.unsafe(`alter table "${schema}".assessed enable row level security;
+      create policy access on "${schema}".assessed using(exists(select 1 from "${schema}".controls));`);
+    const identified = await engine.validate();
+    expect(identified.endpoints.assessed).toEqual({ status: 'unavailable', codes: ['CATALOG_DRIFT'] });
+    expect(identified.endpoints.unrelated.status).toBe('verified');
+    await admin.unsafe(`alter policy access on "${schema}".assessed using(exists(select 1 from "${schema}".hidden));`);
+    const unknown = await engine.validate();
+    expect(Object.values(unknown.endpoints).every(value => value.status === 'unavailable')).toBe(true);
+    const saved = await engine.command({ scope: null }, tx =>
+      tx.execute(sql`insert into ${identifier(schema)}.unrelated(id) values('saved')`),
+    );
+    expect(saved.commitState).toBe('committed');
+    expect(Object.values(saved.impact.endpoints).every(value => value.status === 'unavailable')).toBe(true);
+    expect(await admin.unsafe(`select id from "${schema}".unrelated`)).toEqual([{ id: 'saved' }]);
+  });
   it('rejects a q projection that omits a same-row RLS column while permitting explicit coverage', async () => {
     const resources: Resources = {
       simple: { schema, table: 'simple', idColumn: 'id', scopeColumn: 'tenant', columns: ['id', 'tenant', 'visible'] },
@@ -91,7 +126,6 @@ describe.skipIf(!enabled)('RLS hidden row and column dependencies', () => {
   it('requires broad hidden resource paths and disables literal proofs regardless of catalog iteration order', async () => {
     const resources: Resources = { controls, secured };
     const broad: QueryManifest = {
-      protocolVersion: 1,
       reads: {
         visible: [
           { resource: 'secured', columns: '*', bindings: [] },
@@ -100,15 +134,14 @@ describe.skipIf(!enabled)('RLS hidden row and column dependencies', () => {
       },
     };
     const narrowed: QueryManifest = {
-      protocolVersion: 1,
       reads: {
         visible: [broad.reads.visible[0], { ...broad.reads.visible[1], bindings: [{ column: 'id', input: 'id' }] }],
       },
     };
     await expect(validateCatalog(admin, resources, narrowed)).rejects.toThrow('UNRESOLVED_RLS_COLUMN_DEPENDENCY');
-    await expect(
-      validateCatalog(admin, resources, { protocolVersion: 1, reads: { visible: [broad.reads.visible[0]] } }),
-    ).rejects.toThrow('UNRESOLVED_RLS_DEPENDENCY');
+    await expect(validateCatalog(admin, resources, { reads: { visible: [broad.reads.visible[0]] } })).rejects.toThrow(
+      'UNRESOLVED_RLS_DEPENDENCY',
+    );
     expect([...(await validateCatalog(admin, resources, broad))]).toEqual([]);
     expect([...(await validateCatalog(admin, { secured, controls }, broad))]).toEqual([]);
     const queries = {
@@ -131,7 +164,9 @@ describe.skipIf(!enabled)('RLS hidden row and column dependencies', () => {
       tx.execute(sql`insert into ${identifier(schema)}.controls values('gate','permit','other-tenant')`),
     );
     expect(await engine.query('visible', {}, { scope: null })).toEqual([{ id: 'visible' }]);
-    expect(changed.impact.targets).toEqual([{ endpoint: 'visible', scope: 'global', selector: { kind: 'all' } }]);
+    expect(affectedTargets(changed.impact)).toEqual([
+      { endpoint: 'visible', scope: 'global', selector: { kind: 'all' } },
+    ]);
   });
   it('rejects same-table helper bindings and unproved cross-tenant hidden dependencies', async () => {
     const resources: Resources = {
@@ -155,7 +190,6 @@ describe.skipIf(!enabled)('RLS hidden row and column dependencies', () => {
     const scoped: Resources = { controls: { ...controls, scopeColumn: 'tenant' }, secured };
     await expect(
       validateCatalog(admin, scoped, {
-        protocolVersion: 1,
         reads: {
           visible: [
             { resource: 'secured', columns: '*', bindings: [] },
@@ -316,7 +350,11 @@ describe.skipIf(!enabled)('RLS command, role and column precision', () => {
       const result = await engine.command(context, tx => tx.execute(statement));
       const after = await snapshot();
       const changed = names.filter((_, index) => JSON.stringify(before[index]) !== JSON.stringify(after[index])).sort();
-      expect(result.impact.targets.map(target => target.endpoint).sort()).toEqual(changed);
+      expect(
+        affectedTargets(result.impact)
+          .map(target => target.endpoint)
+          .sort(),
+      ).toEqual(changed);
       return changed;
     };
     expect(await check(sql`insert into ${identifier(schema)}.profile values('caller',true,'old')`)).toEqual([

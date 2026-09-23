@@ -4,7 +4,7 @@
 
 Server-Driven Impact (SDI) is a backend library that calculates which registered query results may be stale after a database command.
 
-SDI aims to automatically collect a mutation's direct and indirect committed database effects into a WriteSet, derive the affected queries and inputs, and return the narrowest safely supported `{ data, impact }` response to the frontend without missing affected results. Applications register Resources and Queries; mutations do not manually report writes or enumerate invalidations. Conservative widening is a fallback when the available evidence cannot justify narrower impact.
+SDI aims to automatically collect a mutation's direct and indirect committed database effects into a WriteSet, derive the affected queries and inputs, and return the narrowest safely supported `{ data, commitState: 'committed', impact }` response to the frontend without missing affected results. Applications register Resources and Queries; mutations do not manually report writes or enumerate invalidations. Conservative widening is a fallback when the available evidence cannot justify narrower impact.
 
 Execution paths include pg, postgres.js, SQLite, and optional Drizzle 0.45.2 + pg and Prisma 7.10.0 + pg adapters. See the [0.4 migration and support guide](./docs/migrations/transaction-impact-0.4.md) and [automatic analysis boundaries](./docs/research/query-automation-boundaries.md).
 
@@ -12,22 +12,43 @@ Suppose an order moves from customer `old` to customer `new`. The detail query f
 
 ```json
 {
-  "protocolVersion": 1,
-  "targets": [
-    {
-      "endpoint": "orders.detail",
-      "scope": "caller",
-      "selector": { "kind": "inputs", "values": [{ "id": "one" }] }
+  "endpoints": {
+    "orders.detail": {
+      "status": "verified",
+      "targets": [
+        {
+          "scope": "caller",
+          "selector": {
+            "kind": "inputs",
+            "values": [
+              {
+                "id": "one"
+              }
+            ]
+          }
+        }
+      ]
     },
-    {
-      "endpoint": "orders.list",
-      "scope": "caller",
-      "selector": {
-        "kind": "inputs",
-        "values": [{ "customer": "new" }, { "customer": "old" }]
-      }
+    "orders.list": {
+      "status": "verified",
+      "targets": [
+        {
+          "scope": "caller",
+          "selector": {
+            "kind": "inputs",
+            "values": [
+              {
+                "customer": "new"
+              },
+              {
+                "customer": "old"
+              }
+            ]
+          }
+        }
+      ]
     }
-  ]
+  }
 }
 ```
 
@@ -47,7 +68,7 @@ Database command ─► observed writes ──┼─► pure calculation ─► 
 2. executable Query definitions describe reads, filters, ordering, and joins.
 3. a database adapter owns the transaction and records the writes that actually commit.
 4. `@server-driven-impact/core` compares the read dependencies with the observed OLD and NEW row states.
-5. the Command resolves with `{ data, impact }` after commit.
+5. the Command resolves with `{ data, commitState: 'committed', impact }` after commit.
 
 Using both OLD and NEW values matters. A row moved from `old` to `new` can make both lists stale. When SDI cannot safely preserve an input constraint, it widens the selector to `{ "kind": "all" }` instead of dropping a possible target.
 
@@ -200,7 +221,7 @@ A PostgreSQL application normally has two lifecycle paths:
 
 The runtime role needs its normal table privileges and should use RLS aligned with the scope set by the adapter's `setup` callback. postgres.js uses `postgresAdapter`. node-postgres uses `pgAdapter` from `@server-driven-impact/postgres/pg`; COPY with that driver also requires `pg-copy-streams`.
 
-Each Command sends one preamble round trip (session lock, collector table, `BEGIN`, request settings) before the business SQL, then `COMMIT`, the observer drain, and the unlock. Reads use one preamble and re-send `search_path` only when a plan's value differs from the one currently in effect, so a transaction whose plans all share one search path sends it once. The preamble temporarily sets `client_min_messages` to `error` for its own implicit block only; the setting reverts before `BEGIN`.
+Each Command sends one preamble round trip (session lock, collector table, `BEGIN`, request settings) before the business SQL, then constraint checking, observer drain, sealing, and `COMMIT`. Reads use one preamble and re-send `search_path` only when a plan's value differs from the one currently in effect, so a transaction whose plans all share one search path sends it once. The preamble temporarily sets `client_min_messages` to `error` for its own implicit block only; the setting reverts before `BEGIN`.
 
 See the [PostgreSQL package guide](./packages/sdi-postgres), [compatibility contract](./spec/server-driven-impact/postgres-compatibility.md), and [orders example](./examples/orders-impact).
 
@@ -212,10 +233,10 @@ The library deliberately fails or widens when it cannot prove a narrow result. D
 
 ## Commit outcome errors
 
-- `ImpactUnavailableError` means the database committed but impact calculation failed. `data` is the committed business result and `commitState` is `committed`.
+- Successful commits return `data`, `commitState: 'committed'`, and endpoint별 impact. Each registered endpoint is `verified`, `conservative`, or `unavailable`. Unavailable endpoints have no targets and require cache invalidation or discontinued reuse on **every command response**.
 - `CommitStateUnknownError` means the client cannot determine whether the commit succeeded. Do not blindly retry a non-idempotent Command.
 
-Use `isCommitOutcomeError()` when mapping these cases into an application protocol. SDI does not impose an HTTP envelope, retry policy, idempotency key, or durable outbox.
+`validate()` returns a report; mismatches do not block the write attempt. The first command caches a validation snapshot; only explicit validation refreshes it. In-flight commands keep their original snapshot. DDL after validation is not detected by that snapshot. SDI does not impose an HTTP envelope, retry policy, idempotency key, or durable outbox.
 
 See the [impact-only migration guide](./docs/migrations/impact-only-0.5.md) for the removed cache packages and server-side input normalization.
 
@@ -237,3 +258,5 @@ Releases use Changesets and npm trusted publishing from `.github/workflows/sdi-r
 ## License
 
 MIT
+
+[Endpoint assessment migration and consumer contract](./docs/migrations/endpoint-assessment.md).

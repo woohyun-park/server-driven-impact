@@ -367,7 +367,7 @@ export function compileManifest(queries: Record<string, QueryDefinition>, resour
     ]),
   );
   // Selectors/column policies affect consistency too, so changes retire the previous graph.
-  const manifest: Manifest = { protocolVersion: 1, sources: sortedSources, dependents, reads };
+  const manifest: Manifest = { sources: sortedSources, dependents, reads };
   if (nativePlans.length) {
     const stamps = nativePlans.flatMap(plan => (plan.catalog ? [plan.catalog] : []));
     const stamp = stamps[0];

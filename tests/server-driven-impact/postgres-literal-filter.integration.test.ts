@@ -1,3 +1,4 @@
+import { affectedTargets } from './impact-assertions.js';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import postgres from 'postgres';
@@ -87,28 +88,32 @@ describe.skipIf(!enabled)('PostgreSQL certified literal equality filters', () =>
     if (facts[0].after.kind !== 'known') throw new Error('KNOWN_ROW_EXPECTED');
     expect(facts[0].after.equalityFields).toEqual({ enabled: true, qty: 1, status: 'draft' });
     const impact = calculateImpact(facts, { resources, manifest, scope: null });
-    expect(impact.targets.map(target => target.endpoint).sort()).toEqual(['boolean', 'date', 'float', 'integer']);
+    expect(
+      affectedTargets(impact)
+        .map(target => target.endpoint)
+        .sort(),
+    ).toEqual(['boolean', 'date', 'float', 'integer']);
     // postgres.js and pg encode a numeric input for a boolean parameter
     // differently. Either execution remains covered by the broad mixed-type fact.
-    expect(impact.targets.some(target => target.endpoint === 'boolean')).toBe(true);
+    expect(affectedTargets(impact).some(target => target.endpoint === 'boolean')).toBe(true);
     for (const endpoint of ['integer', 'float', 'date'] as const)
       expect(await engine.query(endpoint, {}, context), endpoint).toEqual([{ id: 'one' }]);
     expect(await engine.query('ready', { customer: 'a' }, context)).toEqual([]);
     const unrelated = await engine.command(context, tx =>
       tx.execute(sql`update ${identifier(schema)}.records set status='archived' where id='one'`),
     );
-    expect(unrelated.impact.targets).toEqual([]);
+    expect(affectedTargets(unrelated.impact)).toEqual([]);
     const entered = await engine.command(context, tx =>
       tx.execute(sql`update ${identifier(schema)}.records set status='ready' where id='one'`),
     );
     expect(await engine.query('ready', { customer: 'a' }, context)).toEqual([{ id: 'one' }]);
-    expect(entered.impact.targets).toEqual([
+    expect(affectedTargets(entered.impact)).toEqual([
       { endpoint: 'ready', scope: 'global', selector: { kind: 'inputs', values: [{ customer: 'a' }] } },
     ]);
     const left = await engine.command(context, tx =>
       tx.execute(sql`update ${identifier(schema)}.records set status='draft' where id='one'`),
     );
     expect(await engine.query('ready', { customer: 'a' }, context)).toEqual([]);
-    expect(left.impact.targets).toEqual(entered.impact.targets);
+    expect(affectedTargets(left.impact)).toEqual(affectedTargets(entered.impact));
   });
 });

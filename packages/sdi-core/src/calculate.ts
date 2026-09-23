@@ -10,10 +10,14 @@ import {
   type ImpactManifest,
   type WriteFact,
   type ImpactSet,
-  type ImpactTarget,
+  type EndpointTarget,
+  type EndpointImpact,
+  type CommandResult,
+  type ValidationReport,
 } from './contracts.js';
 import type { WriteSet } from './write-set.js';
-import { ImpactUnavailableError } from './errors.js';
+import { unavailableImpact, boundImpact, applyAssessment } from './assessment.js';
+type ImpactTarget = EndpointTarget & { endpoint: string };
 export interface Decision {
   resource: string;
   endpoint?: string;
@@ -27,11 +31,13 @@ export interface Decision {
     | 'selector-limit'
     | 'byte-limit';
 }
+/** Pure calculator: callers/adapters own manifest dependency and write observation completeness; no DB validation occurs here. */
 export interface CalculateOptions {
   resources: ImpactResources;
   manifest: ImpactManifest;
   scope: Scalar;
   explain?: (decision: Decision) => void;
+  assessment?: ValidationReport;
 }
 type IndexedRead = { endpoint: string; read: ImpactManifest['reads'][string][number] };
 type ReadIndex = ReadonlyMap<string, readonly IndexedRead[]>;
@@ -62,8 +68,8 @@ function calculate(writes: readonly WriteFact[], options: CalculateOptions, read
     maxFields: number;
   };
   const targets = new Map<string, TargetEntry>();
-  // Include the envelope and separators, so limits apply to the encoded response.
-  let targetBytes = byteLength({ protocolVersion: 1, targets: [] }) - 1;
+  const reduced = new Set<string>();
+
   function setTarget(
     key: string,
     target: ImpactTarget,
@@ -72,34 +78,23 @@ function calculate(writes: readonly WriteFact[], options: CalculateOptions, read
     minFields = Infinity,
     maxFields = -Infinity,
   ): void {
-    const previous = targets.get(key);
-    if (previous) targetBytes -= previous.bytes + 1;
     targets.set(key, { target, bytes, alternatives, minFields, maxFields });
-    targetBytes += bytes + 1;
-  }
-  function enforceByteBudget(): void {
-    while (targetBytes > LIMITS.impactBytes) {
-      const candidates = [...targets.entries()]
-        .filter(([, entry]) => entry.target.selector.kind === 'inputs')
-        .sort((a, b) => b[1].bytes - a[1].bytes || (a[0] < b[0] ? -1 : 1));
-      const largest = candidates[0];
-      if (!largest) throw new Error('MANIFEST_TARGET_BUDGET');
-      const [key, { target }] = largest;
-      setTarget(key, { ...target, selector: { kind: 'all' } });
-      explain?.({ resource: '*', endpoint: target.endpoint, reason: 'byte-limit' });
-    }
   }
   for (const write of writes) {
     if (!Object.hasOwn(resources, write.resource)) throw new Error('UNREGISTERED_RESOURCE');
     const resource = resources[write.resource];
     for (const row of [write.before, write.after]) {
       if (row.kind === 'absent') continue;
-      if (resource.scopeColumn !== null && row.kind === 'known' && row.scope !== scope) {
-        explain?.({ resource: write.resource, reason: 'scope-excluded' });
-        continue;
-      }
       const targetScope = resource.scopeColumn === null ? 'global' : 'caller';
-      for (const { endpoint, read } of readsByResource.get(write.resource) ?? []) {
+      for (const { endpoint, read: originalRead } of readsByResource.get(write.resource) ?? []) {
+        const assessment = options.assessment?.endpoints[endpoint];
+        if (assessment?.status === 'unavailable') continue;
+        const broaden = assessment?.status === 'conservative';
+        const read = broaden ? { ...originalRead, columns: '*' as const, bindings: [], filters: [] } : originalRead;
+        if (!broaden && resource.scopeColumn !== null && row.kind === 'known' && row.scope !== scope) {
+          explain?.({ resource: write.resource, reason: 'scope-excluded' });
+          continue;
+        }
         if (
           write.operation === 'update' &&
           write.changedColumns !== null &&
@@ -123,6 +118,19 @@ function calculate(writes: readonly WriteFact[], options: CalculateOptions, read
           explain?.({ resource: write.resource, endpoint, reason: 'filter-excluded' });
           continue;
         }
+        if (
+          row.kind === 'unknown' ||
+          write.operation === 'unknown' ||
+          (write.operation === 'update' && write.changedColumns === null && read.columns !== '*') ||
+          read.filters?.some(
+            filter =>
+              row.kind !== 'known' ||
+              !row.equalityFields ||
+              !Object.hasOwn(row.equalityFields, filter.column) ||
+              row.equalityFields[filter.column] !== filter.value,
+          )
+        )
+          reduced.add(endpoint);
         const input: Record<string, Scalar> = Object.create(null);
         let reason: Decision['reason'] = row.kind === 'unknown' ? 'unknown-row' : 'matched';
         for (const binding of read.bindings) {
@@ -209,22 +217,32 @@ function calculate(writes: readonly WriteFact[], options: CalculateOptions, read
               );
             }
           }
-          enforceByteBudget();
         }
+        if (reason !== 'matched') reduced.add(endpoint);
         explain?.({ resource: write.resource, endpoint, reason });
       }
     }
   }
-  const result: ImpactSet = {
-    protocolVersion: 1,
-    targets: [...targets.values()]
-      .map(value => value.target)
-      .sort((a, b) => (canonical([a.endpoint, a.scope]) < canonical([b.endpoint, b.scope]) ? -1 : 1)),
-  };
-  for (const target of result.targets)
+  const endpoints: Record<string, EndpointImpact> = Object.fromEntries(
+    Object.keys(options.manifest.reads)
+      .sort()
+      .map(endpoint => [
+        endpoint,
+        reduced.has(endpoint)
+          ? { status: 'conservative', codes: ['PRECISION_REDUCED'], targets: [] }
+          : { status: 'verified', targets: [] },
+      ]),
+  );
+  for (const { target } of [...targets.values()].sort((a, b) =>
+    canonical([a.target.endpoint, a.target.scope]) < canonical([b.target.endpoint, b.target.scope]) ? -1 : 1,
+  )) {
     if (target.selector.kind === 'inputs')
       target.selector.values.sort((a, b) => (canonical(a) < canonical(b) ? -1 : canonical(a) > canonical(b) ? 1 : 0));
-  return result;
+    endpoints[target.endpoint].targets!.push({ scope: target.scope, selector: target.selector });
+  }
+  const result: ImpactSet = { endpoints };
+  const onWiden = (endpoint: string) => explain?.({ resource: '*', endpoint, reason: 'byte-limit' });
+  return options.assessment ? applyAssessment(result, options.assessment, onWiden) : boundImpact(result, onWiden);
 }
 // Mixed scalar types may be coerced by the DB (including PostgreSQL bool '1').
 // Fractional/unsafe numbers may be rounded by database JSON encoders. Neither
@@ -242,15 +260,15 @@ function subsumes(broad: Record<string, Scalar>, narrow: Record<string, Scalar>)
 export interface CommandAdapter<Db> {
   command<T>(scope: Scalar, work: (db: Db, writes: WriteSet) => Promise<T>): Promise<T>;
 }
-export function createImpact(options: Omit<CalculateOptions, 'scope' | 'explain'>) {
+export function createImpact(options: Omit<CalculateOptions, 'scope' | 'explain' | 'assessment'>) {
   validateImpactResources(options.resources);
   validateImpactManifest(options.manifest, options.resources);
   // Freeze a private JSON snapshot so later caller mutation cannot change the validated policy.
   const policy = JSON.parse(canonical(options)) as typeof options;
   const reads = indexReads(policy.manifest);
   return {
-    calculate(writes: readonly WriteFact[], scope: Scalar) {
-      return calculate(writes, { ...policy, scope }, reads);
+    calculate(writes: readonly WriteFact[], scope: Scalar, assessment?: ValidationReport) {
+      return calculate(writes, { ...policy, scope, assessment }, reads);
     },
     explain(writes: readonly WriteFact[], scope: Scalar) {
       const decisions: Decision[] = [];
@@ -261,7 +279,7 @@ export function createImpact(options: Omit<CalculateOptions, 'scope' | 'explain'
       adapter: CommandAdapter<Db>,
       context: { scope: Scalar },
       work: (db: Db) => Promise<T>,
-    ): Promise<{ data: T; impact: ImpactSet }> {
+    ): Promise<CommandResult<T>> {
       const scope = context.scope;
       let committedWrites: WriteSet | undefined;
       const data = await adapter.command(scope, async (db, writes) => {
@@ -270,9 +288,13 @@ export function createImpact(options: Omit<CalculateOptions, 'scope' | 'explain'
       });
       try {
         if (!committedWrites) throw new Error('COMMAND_CALLBACK_NOT_EXECUTED');
-        return { data, impact: calculate(committedWrites.snapshot(), { ...policy, scope }, reads) };
-      } catch (cause) {
-        throw new ImpactUnavailableError(data, { cause });
+        return {
+          data,
+          commitState: 'committed',
+          impact: calculate(committedWrites.snapshot(), { ...policy, scope }, reads),
+        };
+      } catch {
+        return { data, commitState: 'committed', impact: unavailableImpact(policy.manifest, 'CALCULATION_FAILED') };
       }
     },
   };

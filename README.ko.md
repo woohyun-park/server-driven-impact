@@ -4,7 +4,7 @@
 
 Server-Driven Impact(SDI)는 데이터베이스 Command가 끝난 뒤 어떤 등록 Query 결과가 오래됐을 가능성이 있는지 계산하는 백엔드 라이브러리입니다.
 
-SDI의 궁극적인 목표는 mutation 함수가 DB에 일으킨 직접·간접 변경을 WriteSet으로 최대한 자동 수집하고, 영향받는 조회·입력 범위를 누락 없이 가능한 만큼 좁혀 `{ data, impact }`로 프론트엔드에 전달하는 것입니다. 개발자는 mutation마다 변경 사실이나 갱신할 Query 목록을 수동으로 작성하지 않습니다. Resource/Query 등록은 필요하며, 지원 범위에서 안전하게 좁힐 근거가 부족할 때만 보수적으로 확장합니다.
+SDI의 궁극적인 목표는 mutation 함수가 DB에 일으킨 직접·간접 변경을 WriteSet으로 최대한 자동 수집하고, 영향받는 조회·입력 범위를 누락 없이 가능한 만큼 좁혀 `{ data, commitState: 'committed', impact }`로 프론트엔드에 전달하는 것입니다. 개발자는 mutation마다 변경 사실이나 갱신할 Query 목록을 수동으로 작성하지 않습니다. Resource/Query 등록은 필요하며, 지원 범위에서 안전하게 좁힐 근거가 부족할 때만 보수적으로 확장합니다.
 
 검증된 실행 경로는 pg·postgres.js·SQLite와 선택 연동인 Drizzle 0.45.2 + pg, Prisma 7.10.0 + pg입니다. [지원 범위와 0.4 이전 가이드](./docs/migrations/transaction-impact-0.4.md), [자동 분석의 경계](./docs/research/query-automation-boundaries.md)를 확인하세요.
 
@@ -12,22 +12,43 @@ SDI의 궁극적인 목표는 mutation 함수가 DB에 일으킨 직접·간접 
 
 ```json
 {
-  "protocolVersion": 1,
-  "targets": [
-    {
-      "endpoint": "orders.detail",
-      "scope": "caller",
-      "selector": { "kind": "inputs", "values": [{ "id": "one" }] }
+  "endpoints": {
+    "orders.detail": {
+      "status": "verified",
+      "targets": [
+        {
+          "scope": "caller",
+          "selector": {
+            "kind": "inputs",
+            "values": [
+              {
+                "id": "one"
+              }
+            ]
+          }
+        }
+      ]
     },
-    {
-      "endpoint": "orders.list",
-      "scope": "caller",
-      "selector": {
-        "kind": "inputs",
-        "values": [{ "customer": "new" }, { "customer": "old" }]
-      }
+    "orders.list": {
+      "status": "verified",
+      "targets": [
+        {
+          "scope": "caller",
+          "selector": {
+            "kind": "inputs",
+            "values": [
+              {
+                "customer": "new"
+              },
+              {
+                "customer": "old"
+              }
+            ]
+          }
+        }
+      ]
     }
-  ]
+  }
 }
 ```
 
@@ -47,7 +68,7 @@ Database Command ─► 관찰한 쓰기 ─┼─► 순수 계산 ─► Impac
 2. 실행 가능한 Query 정의에 읽기, 필터, 정렬, 조인을 표현합니다.
 3. DB adapter가 transaction을 소유하고 실제로 커밋되는 쓰기를 기록합니다.
 4. `@server-driven-impact/core`가 읽기 의존성과 OLD/NEW 행 상태를 비교합니다.
-5. Command는 커밋 이후 `{ data, impact }`를 반환합니다.
+5. Command는 커밋 이후 `{ data, commitState: 'committed', impact }`를 반환합니다.
 
 OLD와 NEW를 함께 보는 것이 중요합니다. 값이 `old`에서 `new`로 이동하면 두 목록이 모두 오래됐을 수 있기 때문입니다. SDI가 입력 조건을 안전하게 유지할 수 없을 때는 가능한 대상을 누락하지 않고 selector를 `{ "kind": "all" }`로 넓힙니다.
 
@@ -212,10 +233,10 @@ SDI는 지원되는 작업이 SDI engine과 adapter가 소유한 transaction을 
 
 ## 커밋 결과 오류
 
-- `ImpactUnavailableError`는 DB 커밋은 성공했지만 영향 계산에 실패했다는 뜻입니다. `data`는 커밋된 업무 결과이고 `commitState`는 `committed`입니다.
+- 커밋이 성공하면 `data`, `commitState: 'committed'`, endpoint별 impact를 반환합니다. 모든 endpoint는 `verified`, `conservative`, `unavailable` 중 하나이며, `unavailable`에는 targets가 없습니다. 소비자는 **매 command 응답마다** 해당 endpoint 캐시를 무효화하거나 재사용을 중단해야 합니다.
 - `CommitStateUnknownError`는 클라이언트가 커밋 성공 여부를 알 수 없다는 뜻입니다. 멱등성이 없는 Command를 무조건 재시도하면 안 됩니다.
 
-이 오류를 애플리케이션 프로토콜로 변환할 때는 `isCommitOutcomeError()`를 사용할 수 있습니다. SDI는 HTTP envelope, 재시도 정책, idempotency key, durable outbox 형식을 정하지 않습니다.
+`validate()`는 보고서를 반환하며 불일치만으로 쓰기 시도를 차단하지 않습니다. 첫 command의 검증 스냅샷은 명시적 재검증 전까지 재사용됩니다. 진행 중인 command는 원래 스냅샷을 유지하고 검증 이후 DDL을 감지하지 않습니다. SDI는 HTTP envelope, 재시도 정책, idempotency key, durable outbox 형식을 정하지 않습니다.
 
 삭제된 캐시 패키지와 서버 입력 정규화 방식은 [impact-only 전환 가이드](./docs/migrations/impact-only-0.5.md)를 참고하세요.
 
@@ -237,3 +258,5 @@ GitHub은 `.git-blame-ignore-revs`를 자동으로 적용합니다. 위 `git con
 ## 라이선스
 
 MIT
+
+[endpoint별 impact 변경 및 소비자 계약](./docs/migrations/endpoint-assessment.md).

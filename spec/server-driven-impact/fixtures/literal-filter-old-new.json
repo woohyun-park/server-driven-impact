@@ -10,7 +10,6 @@
     }
   },
   "manifest": {
-    "protocolVersion": 1,
     "reads": {
       "ready": [
         {
@@ -68,21 +67,24 @@
     }
   ],
   "impact": {
-    "protocolVersion": 1,
-    "targets": [
-      {
-        "endpoint": "ready",
-        "scope": "global",
-        "selector": {
-          "kind": "inputs",
-          "values": [
-            {
-              "customer": "a"
+    "endpoints": {
+      "ready": {
+        "status": "verified",
+        "targets": [
+          {
+            "scope": "global",
+            "selector": {
+              "kind": "inputs",
+              "values": [
+                {
+                  "customer": "a"
+                }
+              ]
             }
-          ]
-        }
+          }
+        ]
       }
-    ]
+    }
   },
   "reasons": [
     "matched",

@@ -1,3 +1,4 @@
+import { affectedTargets } from './impact-assertions.js';
 import { describe, expect, it } from 'vitest';
 import {
   byteLength,
@@ -15,7 +16,6 @@ const resources = {
   notes: { scopeColumn: 'tenant', columns: ['tenant', 'id', 'customer', 'value'] },
 };
 const manifest: ImpactManifest = {
-  protocolVersion: 1,
   reads: {
     orders: [
       {
@@ -41,7 +41,7 @@ function fact(resource: 'orders' | 'notes', id: string, customer = 'customer-a',
   };
 }
 const selector = (writes: WriteFact[], endpoint: string) =>
-  engine.calculate(writes, 'tenant-a').targets.find(target => target.endpoint === endpoint)?.selector;
+  affectedTargets(engine.calculate(writes, 'tenant-a')).find(target => target.endpoint === endpoint)?.selector;
 
 describe('resource-local WriteSet precision under hard limits', () => {
   it('keeps a small independent mutation and the overflowing resource common customer/scope', () => {
@@ -51,7 +51,7 @@ describe('resource-local WriteSet precision under hard limits', () => {
     expect(writes.snapshot().find(write => write.resource === 'notes')).toEqual(note);
     expect(selector(writes.snapshot(), 'notes')).toEqual({ kind: 'inputs', values: [{ id: 'note-1' }] });
     expect(selector(writes.snapshot(), 'orders')).toEqual({ kind: 'inputs', values: [{ customer: 'customer-a' }] });
-    expect(engine.calculate(writes.snapshot(), 'tenant-b').targets).toEqual([]);
+    expect(affectedTargets(engine.calculate(writes.snapshot(), 'tenant-b'))).toEqual([]);
     expect(writes.snapshot().length).toBeLessThanOrEqual(LIMITS.facts);
     expect(byteLength(writes.snapshot())).toBeLessThanOrEqual(LIMITS.factBytes);
   });
@@ -82,7 +82,7 @@ describe('resource-local WriteSet precision under hard limits', () => {
   it('preserves UPDATE column pruning and unions later changed columns', () => {
     const valueEngine = createImpact({
       resources,
-      manifest: { protocolVersion: 1, reads: { values: [{ resource: 'orders', columns: ['value'], bindings: [] }] } },
+      manifest: { reads: { values: [{ resource: 'orders', columns: ['value'], bindings: [] }] } },
     });
     const writes = new WriteSet();
     writes.add(
@@ -92,15 +92,15 @@ describe('resource-local WriteSet precision under hard limits', () => {
         changedColumns: ['customer'],
       })),
     );
-    expect(valueEngine.calculate(writes.snapshot(), 'tenant-a').targets).toEqual([]);
+    expect(affectedTargets(valueEngine.calculate(writes.snapshot(), 'tenant-a'))).toEqual([]);
     writes.add([{ ...fact('orders', 'later'), operation: 'update', changedColumns: ['value'] }]);
-    expect(valueEngine.calculate(writes.snapshot(), 'tenant-a').targets).toHaveLength(1);
+    expect(affectedTargets(valueEngine.calculate(writes.snapshot(), 'tenant-a'))).toHaveLength(1);
   });
   it('retains known scope while dropping oversized binding values', () => {
     const writes = new WriteSet();
     writes.add([fact('notes', 'note-1'), fact('orders', 'x'.repeat(LIMITS.factBytes))]);
     expect(selector(writes.snapshot(), 'notes')).toEqual({ kind: 'inputs', values: [{ id: 'note-1' }] });
-    expect(engine.calculate(writes.snapshot(), 'tenant-b').targets).toEqual([]);
+    expect(affectedTargets(engine.calculate(writes.snapshot(), 'tenant-b'))).toEqual([]);
     expect(byteLength(writes.snapshot())).toBeLessThanOrEqual(LIMITS.factBytes);
   });
   it('unknown and mixed scopes never become falsely known after later facts', () => {
@@ -112,7 +112,7 @@ describe('resource-local WriteSet precision under hard limits', () => {
     );
     writes.add([fact('orders', 'later')]);
     expect(selector(writes.snapshot(), 'orders')).toEqual({ kind: 'all' });
-    expect(engine.calculate(writes.snapshot(), 'tenant-b').targets[0].selector).toEqual({ kind: 'all' });
+    expect(affectedTargets(engine.calculate(writes.snapshot(), 'tenant-b'))[0].selector).toEqual({ kind: 'all' });
   });
   it('bounds many resources and merges child summaries without losing effects', () => {
     const writes = new WriteSet();
@@ -135,11 +135,13 @@ describe('endpoint-local impact precision', () => {
       [fact('notes', 'note-1'), fact('orders', 'x'.repeat(LIMITS.impactBytes))],
       'tenant-a',
     );
-    expect(result.impact.targets.find(target => target.endpoint === 'notes')?.selector).toEqual({
+    expect(affectedTargets(result.impact).find(target => target.endpoint === 'notes')?.selector).toEqual({
       kind: 'inputs',
       values: [{ id: 'note-1' }],
     });
-    expect(result.impact.targets.find(target => target.endpoint === 'orders')?.selector).toEqual({ kind: 'all' });
+    expect(affectedTargets(result.impact).find(target => target.endpoint === 'orders')?.selector).toEqual({
+      kind: 'all',
+    });
     expect(byteLength(result.impact)).toBeLessThanOrEqual(LIMITS.impactBytes);
     expect(result.decisions.some(decision => decision.endpoint === 'orders' && decision.reason === 'byte-limit')).toBe(
       true,
@@ -164,8 +166,8 @@ describe('endpoint-local impact precision', () => {
       ...Array.from({ length: 30 }, (_, i) => fact('notes', String(i) + '한'.repeat(1000))),
     ];
     const result = engine.calculate(writes, 'tenant-a');
-    expect(result.targets.every(target => target.selector.kind === 'inputs')).toBe(true);
-    expect(result.targets.find(target => target.endpoint === 'orders')?.selector).toEqual({
+    expect(affectedTargets(result).every(target => target.selector.kind === 'inputs')).toBe(true);
+    expect(affectedTargets(result).find(target => target.endpoint === 'orders')?.selector).toEqual({
       kind: 'inputs',
       values: [{ customer: 'customer-a' }],
     });
@@ -195,7 +197,7 @@ describe('core command final observer lifecycle', () => {
     };
     const result = await engine.command(adapter, { scope: 'tenant-a' }, async () => 'committed');
     expect(result.data).toBe('committed');
-    expect(result.impact.targets[0].selector).toEqual({
+    expect(affectedTargets(result.impact)[0].selector).toEqual({
       kind: 'inputs',
       values: [{ customer: 'customer-a', id: 'deferred' }],
     });

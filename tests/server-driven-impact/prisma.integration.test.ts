@@ -1,3 +1,4 @@
+import { affectedTargets } from './impact-assertions.js';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
@@ -62,7 +63,9 @@ describe.skipIf(!enabled)('Prisma 7.10 native observer conformance', () => {
       })
     : undefined!;
   const included = (impact: ImpactSet, endpoint: string, id: number) =>
-    impact.targets.some(target => target.endpoint === endpoint && matchesInputSelector({ id }, target.selector));
+    affectedTargets(impact).some(
+      target => target.endpoint === endpoint && matchesInputSelector({ id }, target.selector),
+    );
   const run = (work: (client: Client) => Promise<unknown>) => engine.command({ scope: 'test' }, work);
 
   beforeAll(async () => {

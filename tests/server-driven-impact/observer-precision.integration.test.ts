@@ -1,3 +1,4 @@
+import { affectedTargets } from './impact-assertions.js';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
@@ -208,16 +209,18 @@ describe.skipIf(!enabled)('PostgreSQL collected WriteSet completeness and precis
     });
     expect(facts.find(fact => fact.resource === 'small')?.after).toEqual(known('a', { id: 'precise', tenant: 'a' }));
     const impact = calculateImpact(facts, { resources, manifest, scope: 'a' });
-    expect(impact.targets.find(target => target.endpoint === 'largeList')?.selector).toEqual({
+    expect(affectedTargets(impact).find(target => target.endpoint === 'largeList')?.selector).toEqual({
       kind: 'inputs',
       values: [{ customer: 'A' }, { customer: 'B' }],
     });
-    expect(impact.targets.find(target => target.endpoint === 'largeDetail')?.selector).toEqual({ kind: 'all' });
-    expect(impact.targets.find(target => target.endpoint === 'small')?.selector).toEqual({
+    expect(affectedTargets(impact).find(target => target.endpoint === 'largeDetail')?.selector).toEqual({
+      kind: 'all',
+    });
+    expect(affectedTargets(impact).find(target => target.endpoint === 'small')?.selector).toEqual({
       kind: 'inputs',
       values: [{ id: 'precise' }],
     });
-    expect(calculateImpact(facts, { resources, manifest, scope: 'other' }).targets).toEqual([]);
+    expect(affectedTargets(calculateImpact(facts, { resources, manifest, scope: 'other' }))).toEqual([]);
   });
 
   it('rolls back instead of committing a registered write scheduled after the observer drain', async () => {
@@ -271,7 +274,7 @@ describe.skipIf(!enabled)('PostgreSQL collected WriteSet completeness and precis
       expect(actual[0].n).toBeGreaterThan(0);
       const impact = calculateImpact(facts, { resources, manifest, scope });
       expect(
-        impact.targets.some(
+        affectedTargets(impact).some(
           target => target.endpoint === 'largeList' && matchesInputSelector({ customer: 'shared' }, target.selector),
         ),
       ).toBe(true);
@@ -323,8 +326,8 @@ it('SQLite collector overflow is resource-local and savepoint rollback cannot po
     expect(database.prepare("select count(*) as n from large where customer='discarded'").get()?.n).toBe(0);
     expect(database.prepare('select count(*) as n from large').get()?.n).toBe(LIMITS.facts + 25);
     const impact = calculateImpact(facts, { resources, manifest, scope: 'a' });
-    expect(impact.targets.find(target => target.endpoint === 'large')?.selector).toEqual({ kind: 'all' });
-    expect(impact.targets.find(target => target.endpoint === 'small')?.selector).toEqual({
+    expect(affectedTargets(impact).find(target => target.endpoint === 'large')?.selector).toEqual({ kind: 'all' });
+    expect(affectedTargets(impact).find(target => target.endpoint === 'small')?.selector).toEqual({
       kind: 'inputs',
       values: [{ id: 'precise' }],
     });

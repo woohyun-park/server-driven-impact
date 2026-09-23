@@ -1,5 +1,7 @@
 # PostgreSQL transaction-only migration
 
+Historical migration notes. The response, error, and validation contracts are superseded by [endpoint assessment contract](./endpoint-assessment.md).
+
 This release removes the PostgreSQL adapter's session execution path. Query, Command, and catalog validation now use one transaction-pool-compatible database.
 
 ## Connection API

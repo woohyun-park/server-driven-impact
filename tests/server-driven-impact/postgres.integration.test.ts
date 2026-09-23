@@ -1,3 +1,4 @@
+import { affectedTargets } from './impact-assertions.js';
 import { validateCatalog } from '../../packages/sdi-postgres/src/postgres/catalog.js';
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import postgres from 'postgres';
@@ -82,7 +83,7 @@ describe.skipIf(!enabled)('orders domain / real PostgreSQL conformance', () => {
   const read = (endpoint: keyof typeof queries, input: Record<string, unknown>, scope = 'a') =>
     engine.query(endpoint, input, { scope });
   function includes(impact: ImpactSet, endpoint: string, input: Record<string, unknown>) {
-    return impact.targets.some(t => t.endpoint === endpoint && matchesInputSelector(input, t.selector));
+    return affectedTargets(impact).some(t => t.endpoint === endpoint && matchesInputSelector(input, t.selector));
   }
   beforeAll(async () => {
     const version = await admin.unsafe(`select current_setting('server_version_num')::int as number`);
@@ -120,7 +121,6 @@ describe.skipIf(!enabled)('orders domain / real PostgreSQL conformance', () => {
     };
     await expect(
       validateCatalog(admin, exact, {
-        protocolVersion: 1,
         reads: { byValue: [{ resource: 'value', columns: '*', bindings: [{ column: 'value', input: 'value' }] }] },
       }),
     ).resolves.toBeDefined();
@@ -131,7 +131,6 @@ describe.skipIf(!enabled)('orders domain / real PostgreSQL conformance', () => {
     };
     await expect(
       validateCatalog(admin, collated, {
-        protocolVersion: 1,
         reads: { byValue: [{ resource: 'value', columns: '*', bindings: [{ column: 'value', input: 'value' }] }] },
       }),
     ).rejects.toThrow('UNSUPPORTED_SELECTOR_COLLATION:value:value');
@@ -197,11 +196,13 @@ describe.skipIf(!enabled)('orders domain / real PostgreSQL conformance', () => {
     expect(await read('orders.detail', { id: 'child' })).toEqual([]);
     expect(canonical(result.impact)).not.toContain('child');
     expect(
-      (
-        await run('a', tx =>
-          tx.execute(sql`update ${identifier(schema)}.orders set note=${'no'} where id=${'missing'}`),
-        )
-      ).impact.targets,
+      affectedTargets(
+        (
+          await run('a', tx =>
+            tx.execute(sql`update ${identifier(schema)}.orders set note=${'no'} where id=${'missing'}`),
+          )
+        ).impact,
+      ),
     ).toEqual([]);
     await admin.unsafe(
       `alter table "${schema}".orders add constraint unique_note unique(note) deferrable initially deferred`,
@@ -298,7 +299,7 @@ describe.skipIf(!enabled)('orders domain / real PostgreSQL conformance', () => {
         },
       ]),
     );
-    expect(result.impact.targets.find(t => t.endpoint === 'orders.list')?.selector.kind).toBe('all');
+    expect(affectedTargets(result.impact).find(t => t.endpoint === 'orders.list')?.selector.kind).toBe('all');
     expect(canonical(result.impact).length).toBeLessThan(2000);
   });
   it('executes native PostgreSQL DML unchanged on the observed transaction', async () => {
@@ -483,7 +484,7 @@ describe.skipIf(!enabled)('orders domain / real PostgreSQL conformance', () => {
       tx.execute(sql`insert into ${identifier(schema)}.orders(id,tenant_id,customer_id,status,priority,note)
       values(${'kept'},${'a'},${'upsert'},${'ready'},${0},${null}) on conflict(id) do update set customer_id=excluded.customer_id`),
     );
-    expect(result.impact.targets.find(t => t.endpoint === 'orders.list')?.selector).toEqual({
+    expect(affectedTargets(result.impact).find(t => t.endpoint === 'orders.list')?.selector).toEqual({
       kind: 'inputs',
       values: [{ customer: 'kept' }, { customer: 'upsert' }],
     });
@@ -545,7 +546,7 @@ describe.skipIf(!enabled)('orders domain / real PostgreSQL conformance', () => {
     const changed = await securedEngine.command({ scope: 'a' }, db =>
       db.execute(sql`insert into ${identifier(schema)}.${identifier('memberships')}(tenant_id) values(${'a'})`),
     );
-    expect(changed.impact.targets).toContainEqual({
+    expect(affectedTargets(changed.impact)).toContainEqual({
       endpoint: 'secured.byId',
       scope: 'global',
       selector: { kind: 'all' },
@@ -733,11 +734,14 @@ describe.skipIf(!enabled)('orders domain / real PostgreSQL conformance', () => {
     await admin.unsafe(
       `create table "${schema}".events_future partition of "${schema}".events for values from (20) to (30)`,
     );
-    await expect(hierarchy.validate()).rejects.toThrow('RELATION_TOPOLOGY_DRIFT');
+    expect((await hierarchy.validate()).endpoints['events.byId']).toMatchObject({
+      status: 'unavailable',
+      codes: ['RESOURCE_DRIFT'],
+    });
     const installed = await migratePostgresArtifacts(admin, unresolved, hierarchyManifest, {
       runtimeRole: 'routine_runtime',
     });
-    expect(installed.impact.targets.map(target => target.endpoint)).toEqual(['events.byId', 'inherited.byId']);
+    expect(affectedTargets(installed.impact).map(target => target.endpoint)).toEqual(['events.byId', 'inherited.byId']);
     const next = createImpact({
       adapter: postgresAdapter({ database: db }),
       resources: installed.resources,
@@ -847,7 +851,7 @@ describe.skipIf(!enabled)('orders domain / real PostgreSQL conformance', () => {
     await admin.unsafe(`insert into "${schema}".material_source values('two','after')`);
     expect(await material.query('snapshot.all', {}, { scope: 'a' })).toEqual([{ id: 'one', value: 'before' }]);
     const refreshed = await material.command({ scope: 'a' }, db => db.refreshMaterializedView('snapshot'));
-    expect(refreshed.impact.targets).toEqual([
+    expect(affectedTargets(refreshed.impact)).toEqual([
       { endpoint: 'snapshot.all', scope: 'global', selector: { kind: 'all' } },
     ]);
     expect(await material.query('snapshot.all', {}, { scope: 'a' })).toEqual([
@@ -863,7 +867,7 @@ describe.skipIf(!enabled)('orders domain / real PostgreSQL conformance', () => {
         }),
       ).rejects.toThrow('rollback refresh');
     });
-    expect(rolledBack.impact.targets).toEqual([]);
+    expect(affectedTargets(rolledBack.impact)).toEqual([]);
     expect(await material.query('snapshot.all', {}, { scope: 'a' })).toEqual([
       { id: 'one', value: 'before' },
       { id: 'two', value: 'after' },
@@ -872,7 +876,7 @@ describe.skipIf(!enabled)('orders domain / real PostgreSQL conformance', () => {
       'MATERIALIZED_VIEW_RESOURCE_REQUIRED',
     );
   });
-  it('refuses startup when an installed observer function was replaced', async () => {
+  it('reports unavailable when an installed observer function was replaced', async () => {
     const manifest = compileManifest(queries, resources);
     const fingerprint = observerFingerprint(resources, manifest);
     const layout = observerLayout(fingerprint);
@@ -882,12 +886,39 @@ describe.skipIf(!enabled)('orders domain / real PostgreSQL conformance', () => {
       as $$begin return null;end$$`);
     const fresh = createImpact({ adapter: postgresAdapter({ database: db, setup }), resources, queries });
     try {
-      await expect(fresh.validate()).rejects.toThrow('OBSERVER_COVERAGE_MISMATCH');
+      expect((await fresh.validate()).endpoints['orders.list']).toMatchObject({
+        status: 'unavailable',
+        codes: ['OBSERVER_UNVERIFIED'],
+      });
+      const saved = await fresh.command({ scope: 'a' }, tx =>
+        tx.execute(
+          sql`insert into ${identifier(schema)}.orders(id,tenant_id,status,priority) values('unverified-observer','a','ready',0) returning id`,
+        ),
+      );
+      expect(saved.commitState).toBe('committed');
+      expect(saved.impact.endpoints['orders.list']).toEqual({ status: 'unavailable', codes: ['OBSERVER_UNVERIFIED'] });
+      expect(await admin.unsafe(`select id from "${schema}".orders where id='unverified-observer'`)).toEqual([
+        { id: 'unverified-observer' },
+      ]);
+      await admin.unsafe(`create or replace function ${layout.internalSchema}.${functionName}() returns trigger
+        language plpgsql security invoker set search_path=pg_catalog,pg_temp
+        as $$begin raise exception 'observer execution failed';end$$`);
+      let invoked = false;
+      await expect(
+        fresh.command({ scope: 'a' }, async tx => {
+          invoked = true;
+          return tx.execute(
+            sql`insert into ${identifier(schema)}.orders(id,tenant_id,status,priority) values('broken-observer','a','ready',0)`,
+          );
+        }),
+      ).rejects.toThrow('observer execution failed');
+      expect(invoked).toBe(true);
+      expect(await admin.unsafe(`select id from "${schema}".orders where id='broken-observer'`)).toEqual([]);
     } finally {
       await admin.unsafe(generateObserverMigration(resources, manifest, { runtimeRole: 'routine_runtime' }));
     }
     await expect(
       createImpact({ adapter: postgresAdapter({ database: db, setup }), resources, queries }).validate(),
-    ).resolves.toBeUndefined();
+    ).resolves.toHaveProperty('endpoints');
   });
 });

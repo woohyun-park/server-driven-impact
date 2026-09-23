@@ -1,3 +1,4 @@
+import { affectedTargets } from './impact-assertions.js';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { DatabaseSync } from 'node:sqlite';
 import { randomUUID } from 'node:crypto';
@@ -171,7 +172,7 @@ for (const dialect of ['sqlite', 'postgres'] as const)
     it('new membership, OLD/NEW filters, no-match/no-change, nullable filters and supported predicates', async () => {
       const inserted = await engine.command(context, db => insert(dialect, schema, db, 'orders', [order('one')], true));
       expect(inserted.data.rows).toMatchObject([{ id: 'one' }]);
-      expect(inserted.impact.targets.find(t => t.endpoint === 'orders.list')?.selector).toEqual({
+      expect(affectedTargets(inserted.impact).find(t => t.endpoint === 'orders.list')?.selector).toEqual({
         kind: 'inputs',
         values: [{ customer: 'first' }],
       });
@@ -179,7 +180,7 @@ for (const dialect of ['sqlite', 'postgres'] as const)
         update(dialect, schema, db, 'orders', { customer_id: null }, { id: 'one' }, true),
       );
       expect(moved.data.rows).toMatchObject([{ customer_id: null }]);
-      expect(moved.impact.targets.find(t => t.endpoint === 'orders.list')?.selector).toEqual({
+      expect(affectedTargets(moved.impact).find(t => t.endpoint === 'orders.list')?.selector).toEqual({
         kind: 'inputs',
         values: [{ customer: 'first' }, { customer: null }],
       });
@@ -192,12 +193,21 @@ for (const dialect of ['sqlite', 'postgres'] as const)
       ).toBe(1);
       for (const id of ['one', 'missing'])
         expect(
-          (await engine.command(context, db => update(dialect, schema, db, 'orders', { status: 'ready' }, { id })))
-            .impact.targets,
+          affectedTargets(
+            (await engine.command(context, db => update(dialect, schema, db, 'orders', { status: 'ready' }, { id })))
+              .impact,
+          ),
         ).toEqual([]);
       expect(await engine.command(context, db => selectPriority(dialect, db, schema))).toMatchObject({
         data: [{ id: 'one' }],
-        impact: { targets: [] },
+        impact: {
+          endpoints: Object.fromEntries(
+            ['orders.detail', 'orders.list', 'orders.ready', 'orders.total'].map(endpoint => [
+              endpoint,
+              { status: 'verified', targets: [] },
+            ]),
+          ),
+        },
       });
     });
     it('join/aggregate results and cascade writes share the registered dependency graph', async () => {
@@ -205,13 +215,13 @@ for (const dialect of ['sqlite', 'postgres'] as const)
       const inserted = await engine.command(context, db =>
         insert(dialect, schema, db, 'items', [{ id: 'item', tenant_id: 'a', order_id: 'one', amount: 42 }]),
       );
-      expect(inserted.impact.targets.map(t => t.endpoint)).toEqual(['orders.detail', 'orders.total']);
+      expect(affectedTargets(inserted.impact).map(t => t.endpoint)).toEqual(['orders.detail', 'orders.total']);
       expect(await engine.query('orders.detail', { id: 'one' }, context)).toMatchObject([
         { id: 'one', items: [{ amount: 42 }] },
       ]);
       expect(await engine.query('orders.total', { id: 'one' }, context)).toBe(42);
       const deleted = await engine.command(context, db => remove(dialect, schema, db, 'orders', { id: 'one' }));
-      expect(deleted.impact.targets.map(t => t.endpoint)).toContain('orders.total');
+      expect(affectedTargets(deleted.impact).map(t => t.endpoint)).toContain('orders.total');
       expect(await engine.query('orders.total', { id: 'one' }, context)).toBe(0);
     });
     it('transaction/savepoint rollback and closed handles cannot publish writes', async () => {
@@ -289,7 +299,7 @@ for (const dialect of ['sqlite', 'postgres'] as const)
         for (let j = 0; j < inputs.length; j++)
           if (canonical(before[j]) !== canonical(after[j])) {
             expect(
-              changed.impact.targets.some(
+              affectedTargets(changed.impact).some(
                 t => t.endpoint === inputs[j][0] && matchesInputSelector(inputs[j][1], t.selector),
               ),
               `${i}: ${inputs[j][0]}`,
@@ -308,15 +318,15 @@ for (const dialect of ['sqlite', 'postgres'] as const)
         ),
       );
       expect(result.data.count).toBe(210);
-      expect(result.impact.targets.find(t => t.endpoint === 'orders.detail')?.selector.kind).toBe('all');
-      expect(result.impact.targets.find(t => t.endpoint === 'orders.list')?.selector).toEqual(
+      expect(affectedTargets(result.impact).find(t => t.endpoint === 'orders.detail')?.selector.kind).toBe('all');
+      expect(affectedTargets(result.impact).find(t => t.endpoint === 'orders.list')?.selector).toEqual(
         dialect === 'postgres' ? { kind: 'inputs', values: [{ customer: 'first' }] } : { kind: 'all' },
       );
       const changed = await engine.command(context, db =>
         update(dialect, schema, db, 'orders', { status: 'draft' }, {}),
       );
-      expect(changed.impact.targets.find(t => t.endpoint === 'orders.ready')?.selector.kind).toBe('all');
-      expect(changed.impact.targets.find(t => t.endpoint === 'orders.list')?.selector).toEqual(
+      expect(affectedTargets(changed.impact).find(t => t.endpoint === 'orders.ready')?.selector.kind).toBe('all');
+      expect(affectedTargets(changed.impact).find(t => t.endpoint === 'orders.list')?.selector).toEqual(
         dialect === 'postgres' ? { kind: 'inputs', values: [{ customer: 'first' }] } : { kind: 'all' },
       );
     });
