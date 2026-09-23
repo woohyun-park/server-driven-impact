@@ -87,3 +87,5 @@ adapter는 Command transaction 안에서 native DML, trigger, foreign-key cascad
 Node.js 22.18 이상이 필요합니다.
 
 0.4에서는 `tx.prepare(text).run/get/all`을 동기 실행하며 `changes`·`lastInsertRowid` 등 native 결과를 보존합니다. command 또는 savepoint가 끝난 뒤 준비된 statement를 실행하면 거절합니다. 관리 연결을 공유하는 engine의 command는 직렬화하고 관찰 정의를 전환합니다. collector 상한에서는 공통 예산이 허용하는 범위까지 무관 resource의 상세 기록을 보존합니다. [이전 가이드와 한계](../../docs/migrations/transaction-impact-0.4.md).
+
+검증은 `ValidationReport`를 반환합니다. 첫 command가 고정한 검증 스냅샷은 명시적 `validate()`까지 재사용하며, 검증 이후 DDL은 감지하지 않습니다. 매 응답의 endpoint 상태를 처리해야 합니다. `unavailable`에는 targets가 없으며 해당 endpoint의 캐시를 무효화하거나 재사용을 중단해야 합니다. [endpoint별 impact 변경 안내](../../docs/migrations/endpoint-assessment.md).

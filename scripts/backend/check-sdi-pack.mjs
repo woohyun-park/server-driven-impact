@@ -124,7 +124,7 @@ const engine = createImpact({
 const logical = await engine.command({scope:null},async db => {
   await db.execute('insert into items(id) values(?)',[1]);return {id:1};
 });
-if(logical.data.id!==1 || logical.impact.protocolVersion!==1) throw new Error('COMMAND_OUTPUT_FAILED');
+if(logical.data.id!==1 || !logical.impact.endpoints || logical.commitState!=='committed') throw new Error('COMMAND_OUTPUT_FAILED');
 memory.close();
 for (const path of ['@server-driven-impact/runtime/query','@server-driven-impact/postgres/dist/postgres/index.js','@server-driven-impact/core/contracts']) {
   try { await import(path); throw new Error('INTERNAL_SUBPATH_EXPOSED:'+path); }

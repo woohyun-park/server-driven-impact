@@ -474,7 +474,6 @@ import { bindAdapter, type QueryManifest, type Resources } from '@server-driven-
 
 const resources: Resources = { rows: { table: 'rows', idColumn: 'id', scopeColumn: null, columns: ['id'] } };
 const manifest: QueryManifest = {
-  protocolVersion: 1,
   reads: { list: [{ resource: 'rows', columns: '*', bindings: [] }] },
 };
 

@@ -1,3 +1,4 @@
+import { affectedTargets } from './impact-assertions.js';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import postgres from 'postgres';
@@ -87,7 +88,7 @@ describe.skipIf(!enabled)('native/Drizzle mutation to frontend conformance', () 
       return tx.savepoint(async child => (await child`select ${8}::int as n`)[0].n);
     });
     expect(result.data).toBe(8);
-    expect(result.impact.targets).toEqual([]);
+    expect(affectedTargets(result.impact)).toEqual([]);
     await expect(late.execute()).rejects.toThrow('WRITE_CONTEXT_CLOSED');
     await expect(
       tagged.command({ scope: 'a' }, async tx => {
@@ -125,13 +126,13 @@ describe.skipIf(!enabled)('native/Drizzle mutation to frontend conformance', () 
     ];
     expect(affectedQueries(response.impact, cached)).toEqual(cached.slice(0, 3));
     expect(response.data.customer_id).toBe('B');
-    expect(Object.keys(response)).toEqual(['data', 'impact']);
+    expect(Object.keys(response)).toEqual(['data', 'commitState', 'impact']);
     await expect(late).rejects.toThrow();
     await expect(escaped.select().from(repository.orders)).rejects.toThrow();
     const deleted = await orm.command({ scope: 'a' }, tx =>
       tx.delete(repository.orders).where(eq(repository.orders.id, 'orm')),
     );
-    expect(deleted.impact.targets.some(t => t.endpoint === 'orders.total')).toBe(true);
+    expect(affectedTargets(deleted.impact).some(t => t.endpoint === 'orders.total')).toBe(true);
   });
   it('preserves RLS and SQL error codes through ORM execution', async () => {
     await expect(

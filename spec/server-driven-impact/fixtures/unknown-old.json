@@ -17,7 +17,6 @@
     }
   },
   "manifest": {
-    "protocolVersion": 1,
     "reads": {
       "list": [
         {
@@ -55,16 +54,22 @@
     }
   ],
   "impact": {
-    "protocolVersion": 1,
-    "targets": [
-      {
-        "endpoint": "list",
-        "scope": "caller",
-        "selector": {
-          "kind": "all"
-        }
+    "endpoints": {
+      "list": {
+        "status": "conservative",
+        "targets": [
+          {
+            "scope": "caller",
+            "selector": {
+              "kind": "all"
+            }
+          }
+        ],
+        "codes": [
+          "PRECISION_REDUCED"
+        ]
       }
-    ]
+    }
   },
   "reasons": [
     "unknown-row"

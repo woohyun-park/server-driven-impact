@@ -1,7 +1,14 @@
 import { guardDatabase } from '@server-driven-impact/runtime/adapter';
 import type postgres from 'postgres';
 import type { WriteSet } from '@server-driven-impact/core';
-import { canonical, type Scalar } from '@server-driven-impact/core';
+import {
+  canonical,
+  mergeAssessment,
+  validationReport,
+  assessResource,
+  type ValidationReport,
+  type Scalar,
+} from '@server-driven-impact/core';
 import {
   bindAdapter,
   type ImpactAdapter,
@@ -23,7 +30,7 @@ import {
   type ObserverRow,
 } from './observer.js';
 import { randomUUID } from 'node:crypto';
-import { CommitStateUnknownError, ImpactUnavailableError } from '@server-driven-impact/runtime/adapter';
+import { CommitStateUnknownError } from '@server-driven-impact/runtime/adapter';
 import { createPostgresCatalogResolver } from './catalog-resolver.js';
 import { releaseTransactionConnection } from './connection.js';
 import { commandPreambleSql, ISOLATION_LEVELS, transactionReadPreambleSql, type IsolationLevel } from './preamble.js';
@@ -146,7 +153,6 @@ export function postgresAdapter<T extends Record<string, unknown>>(
   if (!ISOLATION_LEVELS.includes(isolationLevel)) throw new Error('INVALID_ISOLATION_LEVEL');
   return Object.freeze({
     [bindAdapter](resources: Resources, manifest: QueryManifest) {
-      let equalityResources: ReadonlySet<string> = new Set();
       const reserve = async () => {
         if (quarantinedDatabases.has(options.database)) throw new Error('POSTGRES_CONNECTION_QUARANTINED');
         return options.database.reserve();
@@ -156,8 +162,11 @@ export function postgresAdapter<T extends Record<string, unknown>>(
       };
       const fingerprint = observerFingerprint(resources, manifest);
       const layout = observerLayout(fingerprint);
-      const performValidation = async (database: Transaction): Promise<ReadonlySet<string>> => {
-        const validatedEqualityResources = await validateCatalog(database, resources, manifest);
+      const performValidation = async (
+        database: Transaction,
+        report: ValidationReport,
+      ): Promise<ReadonlySet<string>> => {
+        const validatedEqualityResources = await validateCatalog(database, resources, manifest, report);
         const rows = await database.unsafe(
           `select fingerprint,definition_hashes from ${layout.internalSchema}.${layout.metadataTable} where singleton=true`,
         );
@@ -214,7 +223,7 @@ export function postgresAdapter<T extends Record<string, unknown>>(
                 row.function_name !== expectedFunction ||
                 definitionHashes[expectedFunction] !== row.function_hash
               ) {
-                throw new Error(`OBSERVER_COVERAGE_MISMATCH:${key}`);
+                assessResource(report, manifest, resourceId, { status: 'unavailable', codes: ['OBSERVER_UNVERIFIED'] });
               }
               actual.delete(key);
             }
@@ -259,14 +268,31 @@ export function postgresAdapter<T extends Record<string, unknown>>(
         }
       };
       const runValidation = async () => {
-        equalityResources = new Set();
-        equalityResources = await readTransaction(performValidation);
+        const report = validationReport(manifest);
+        let equalityResources: ReadonlySet<string> = new Set();
+        try {
+          equalityResources = await readTransaction(tx => performValidation(tx, report));
+        } catch (error) {
+          const message = error instanceof Error ? error.message : '';
+          const code = message.startsWith('OBSERVER_')
+            ? 'OBSERVER_UNVERIFIED'
+            : message === 'POSTGRES_ARTIFACT_DRIFT' || message.startsWith('UNRESOLVED_RLS_')
+              ? 'CATALOG_DRIFT'
+              : 'VALIDATION_FAILED';
+          for (const endpoint of Object.keys(report.endpoints))
+            report.endpoints[endpoint] = mergeAssessment(report.endpoints[endpoint], {
+              status: 'unavailable',
+              codes: [code],
+            });
+        }
+        // The promise, not its completion order, selects the next command's snapshot.
+        return { report, equalityResources };
       };
-      let commandValidation: Promise<void> | undefined;
+      let commandValidation: ReturnType<typeof runValidation> | undefined;
       const validate = async () => {
         const current = runValidation();
         commandValidation = current;
-        await current;
+        return structuredClone((await current).report);
       };
       const ensureCommandValidated = () => (commandValidation ??= runValidation());
       return {
@@ -302,11 +328,14 @@ export function postgresAdapter<T extends Record<string, unknown>>(
           });
           return result.data;
         },
-        async command<V>(scope: Scalar, writes: WriteSet, work: (db: PostgresCommandDb) => Promise<V>): Promise<V> {
-          // Protocol 10's sealed observer is a correctness boundary. A stale
-          // observer must fail before application DML rather than silently omit
-          // a write scheduled after the pre-commit drain.
-          await ensureCommandValidated();
+        async command<V>(
+          scope: Scalar,
+          writes: WriteSet,
+          work: (db: PostgresCommandDb) => Promise<V>,
+        ): Promise<{ data: V; assessment: ValidationReport }> {
+          const snapshot = await ensureCommandValidated();
+          const assessment = structuredClone(snapshot.report);
+          const equalityResources = snapshot.equalityResources;
           const session = await reserve();
           const token = randomUUID();
           const transactionState: {
@@ -411,17 +440,31 @@ export function postgresAdapter<T extends Record<string, unknown>>(
           } finally {
             await release(session, broken);
           }
-          try {
-            const facts = rowsToFacts(observed);
-            for (const fact of facts)
-              if (!equalityResources.has(fact.resource)) {
-                for (const row of [fact.before, fact.after]) if (row.kind === 'known') delete row.equalityFields;
-              }
-            writes.add(facts);
-          } catch (cause) {
-            throw new ImpactUnavailableError(data, { cause });
+          for (const row of observed) {
+            try {
+              const facts = rowsToFacts([row]);
+              for (const fact of facts)
+                if (!equalityResources.has(fact.resource))
+                  for (const state of [fact.before, fact.after])
+                    if (state.kind === 'known') delete state.equalityFields;
+              writes.add(facts);
+            } catch {
+              // Only isolate rows whose resource identity is known. Validation already
+              // marks any endpoint whose dependency completeness is unproved.
+              if (typeof row?.resource === 'string' && Object.hasOwn(resources, row.resource))
+                assessResource(assessment, manifest, row.resource, {
+                  status: 'unavailable',
+                  codes: ['OBSERVATION_FAILED'],
+                });
+              else
+                for (const endpoint of Object.keys(assessment.endpoints))
+                  assessment.endpoints[endpoint] = mergeAssessment(assessment.endpoints[endpoint], {
+                    status: 'unavailable',
+                    codes: ['OBSERVATION_FAILED'],
+                  });
+            }
           }
-          return data;
+          return { data, assessment };
         },
       };
     },

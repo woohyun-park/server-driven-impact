@@ -5,9 +5,12 @@ export function affectedQueries(
   impact: ImpactSet,
   queries: readonly { endpoint: string; input: Record<string, unknown> }[],
 ) {
-  return queries.filter(query =>
-    impact.targets.some(
-      target => target.endpoint === query.endpoint && matchesInputSelector(query.input, target.selector),
-    ),
-  );
+  return queries.filter(query => {
+    const endpoint = impact.endpoints[query.endpoint];
+    return (
+      !endpoint ||
+      endpoint.status === 'unavailable' ||
+      endpoint.targets.some(target => matchesInputSelector(query.input, target.selector))
+    );
+  });
 }

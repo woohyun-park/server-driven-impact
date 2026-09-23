@@ -87,7 +87,7 @@ observer phase는 `collecting → sealed`로 이동하고 request token은 COMMI
 - callback, pending 작업 정리, `SET CONSTRAINTS`, observation drain, seal 중 실패: COMMIT 전 실패이므로 rollback하고 원래 오류를 반환한다.
 - COMMIT의 명확한 PostgreSQL 거절: 원래 SQLSTATE 오류를 유지한다.
 - COMMIT 전송 뒤 성공 여부를 확인할 수 없음: `CommitStateUnknownError`. impact를 공개하거나 mutation을 자동 재시도하지 않는다.
-- 성공한 COMMIT 뒤 메모리 observation 변환 실패: `ImpactUnavailableError.data`에 커밋된 callback 결과를 보존한다.
+- 성공한 COMMIT 뒤 메모리 observation 변환 실패: `CommandResult.data`에 커밋된 callback 결과를 보존한다.
 - rollback 또는 protocol 정리에 실패한 연결: pg는 `release(true)`로 폐기한다. 안전한 단일 연결 폐기를 확인할 수 없는 postgres.js adapter는 격리되어 후속 요청을 거절한다.
 
 성공한 COMMIT 뒤에는 collector 조회, advisory unlock, backend 종료 SQL을 실행하지 않는다. 연결 반환 오류는 확인된 COMMIT 결과나 원래 업무 오류를 덮어쓰지 않는다.

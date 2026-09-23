@@ -17,7 +17,6 @@
     }
   },
   "manifest": {
-    "protocolVersion": 1,
     "reads": {
       "list": [
         {
@@ -55,21 +54,24 @@
     }
   ],
   "impact": {
-    "protocolVersion": 1,
-    "targets": [
-      {
-        "endpoint": "list",
-        "scope": "caller",
-        "selector": {
-          "kind": "inputs",
-          "values": [
-            {
-              "filter": false
+    "endpoints": {
+      "list": {
+        "status": "verified",
+        "targets": [
+          {
+            "scope": "caller",
+            "selector": {
+              "kind": "inputs",
+              "values": [
+                {
+                  "filter": false
+                }
+              ]
             }
-          ]
-        }
+          }
+        ]
       }
-    ]
+    }
   },
   "reasons": [
     "matched"

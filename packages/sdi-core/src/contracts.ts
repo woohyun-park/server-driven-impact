@@ -25,18 +25,45 @@ export interface ReadDependency {
 }
 /** Database-independent input consumed by the impact calculator. */
 export interface ImpactManifest {
-  protocolVersion: 1;
   reads: Record<string, ReadDependency[]>;
 }
 export type Selector = { kind: 'all' } | { kind: 'inputs'; values: Record<string, Scalar>[] };
-export interface ImpactTarget {
-  endpoint: string;
+export const IMPACT_REASON_CODES = [
+  'VALIDATION_FAILED',
+  'CATALOG_DRIFT',
+  'RESOURCE_DRIFT',
+  'OBSERVER_UNVERIFIED',
+  'PRECISION_REDUCED',
+  'OBSERVATION_FAILED',
+  'CALCULATION_FAILED',
+] as const;
+export type ImpactReasonCode = (typeof IMPACT_REASON_CODES)[number];
+/** Relative to the last validation snapshot pinned by this command; does not detect DDL after validation. */
+export type Assessment =
+  | { status: 'verified' }
+  | { status: 'conservative'; codes: ImpactReasonCode[] }
+  | { status: 'unavailable'; codes: ImpactReasonCode[] };
+export interface ValidationReport {
+  endpoints: Record<string, Assessment>;
+}
+export interface EndpointTarget {
   scope: 'caller' | 'global';
   selector: Selector;
 }
+/** Relative to the last validation snapshot pinned by this command; does not detect DDL after validation.
+ * Empty targets prove no impact only with complete dependencies and observation in that snapshot.
+ */
+export type EndpointImpact =
+  | { status: 'verified'; targets: EndpointTarget[] }
+  | { status: 'conservative'; codes: ImpactReasonCode[]; targets: EndpointTarget[] }
+  | { status: 'unavailable'; codes: ImpactReasonCode[]; targets?: never };
 export interface ImpactSet {
-  protocolVersion: 1;
-  targets: ImpactTarget[];
+  endpoints: Record<string, EndpointImpact>;
+}
+export interface CommandResult<T> {
+  data: T;
+  commitState: 'committed';
+  impact: ImpactSet;
 }
 /** Database-independent resource policy consumed by the impact calculator. */
 export interface ImpactResource {
@@ -134,10 +161,18 @@ export function validateImpactResources(resources: ImpactResources): void {
   }
 }
 export function validateImpactManifest(manifest: ImpactManifest, resources: ImpactResources): void {
-  if (manifest.protocolVersion !== 1) throw new Error('UNSUPPORTED_MANIFEST_VERSION');
+  if (
+    !manifest ||
+    typeof manifest !== 'object' ||
+    !manifest.reads ||
+    typeof manifest.reads !== 'object' ||
+    Array.isArray(manifest.reads) ||
+    Object.keys(manifest).some(key => !['reads', 'sources', 'dependents', 'postgres'].includes(key))
+  )
+    throw new Error('INVALID_MANIFEST');
   if (
     Object.keys(manifest.reads).length > LIMITS.endpoints ||
-    byteLength({ protocolVersion: manifest.protocolVersion, reads: manifest.reads }) > LIMITS.manifestBytes
+    byteLength({ reads: manifest.reads }) > LIMITS.manifestBytes
   )
     throw new Error('MANIFEST_LIMIT');
   for (const [endpoint, reads] of Object.entries(manifest.reads)) {
@@ -162,9 +197,15 @@ export function validateImpactManifest(manifest: ImpactManifest, resources: Impa
     }
   }
   // Even full widening must fit the output budget.
-  const broad = Object.keys(manifest.reads).flatMap(endpoint =>
-    ['caller', 'global'].map(scope => ({ endpoint, scope, selector: { kind: 'all' } })),
+  const broad = Object.fromEntries(
+    Object.keys(manifest.reads).map(endpoint => [
+      endpoint,
+      {
+        status: 'conservative',
+        codes: [...IMPACT_REASON_CODES].sort(),
+        targets: ['caller', 'global'].map(scope => ({ scope, selector: { kind: 'all' } })),
+      },
+    ]),
   );
-  if (byteLength({ protocolVersion: 1, targets: broad }) > LIMITS.impactBytes)
-    throw new Error('MANIFEST_TARGET_BUDGET');
+  if (byteLength({ endpoints: broad }) > LIMITS.impactBytes) throw new Error('MANIFEST_TARGET_BUDGET');
 }

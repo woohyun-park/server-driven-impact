@@ -23,7 +23,6 @@ const resources = {
   probe: { schema: 'public', table: 'sdi_pool_probe', idColumn: 'id', scopeColumn: null, columns: ['id'] },
 } as const;
 const manifest: QueryManifest = {
-  protocolVersion: 1,
   reads: { probe: [{ resource: 'probe', columns: '*', bindings: [] }] },
 };
 const plan: PostgresQueryPlan = {
@@ -57,7 +56,7 @@ describe.skipIf(!enabled)('PostgreSQL transaction pool', () => {
       close(): Promise<void>;
       query(): Promise<void>;
       command(): Promise<void>;
-      validate(): Promise<void>;
+      validate(): Promise<import('@server-driven-impact/core').ValidationReport>;
     }> = [];
     const clientCount = Number(process.env.SDI_POSTGRES_TRANSACTION_CLIENTS ?? 30);
     for (let index = 0; index < clientCount; index++) {

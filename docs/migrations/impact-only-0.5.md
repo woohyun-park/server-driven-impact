@@ -17,12 +17,13 @@ The published package set is now:
 const { data, impact } = await engine.command(context, work);
 
 // Translate logical targets at the application boundary.
-for (const target of impact.targets) {
-  invalidateApplicationQueries(target);
+for (const [endpoint, assessment] of Object.entries(impact.endpoints)) {
+  if (assessment.status === 'unavailable') invalidateEndpoint(endpoint);
+  else for (const target of assessment.targets) invalidateApplicationQueries({ endpoint, ...target });
 }
 ```
 
-`ImpactSet` does not prescribe TanStack Query keys, GraphQL documents, Apollo entity IDs, or another cache's representation. An application can match `target.endpoint`, `target.scope`, and `target.selector` against whichever query registry it owns.
+`ImpactSet` does not prescribe TanStack Query keys, GraphQL documents, Apollo entity IDs, or another cache's representation. An application can match the endpoint key, `target.scope`, and `target.selector` against whichever query registry it owns.
 
 ## Server-owned input normalization
 
@@ -59,4 +60,4 @@ Identity `q.call()` paths carry preservation checks through nested queries. An o
 
 ## Error changes
 
-`ImpactUnavailableError` now only represents post-commit impact calculation failure. It retains `data`, `code`, `commitState`, and `impactStatus`; cache-compilation `phase` and partial `impact` fields were removed.
+`ImpactUnavailableError` is removed by [endpoint assessment contract](./endpoint-assessment.md). Successful commits preserve `data` and return endpoint assessments even when impact calculation fails.

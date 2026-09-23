@@ -24,7 +24,7 @@ SDI가 Query와 실제 DB의 비교 규칙을 검증해 일반 문자열 동등 
 
 ## 현재 코드에서 확인한 연결 지점
 
-- `sdi-cache-contract/src/input.ts`의 `selectorValue()`는 일반 문자열에 대한 protocol-1 비교 증명이 없어 fallback한다.
+- `sdi-cache-contract/src/input.ts`의 `selectorValue()`는 일반 문자열에 대한 문자열 비교 증명이 없어 fallback한다.
 - `sdi-core/src/contracts.ts`의 matcher는 생략 필드·ASCII 대소문자·후행 공백·일부 scalar coercion을 보수적으로 포함한다.
 - `sdi-runtime/src/query/plan.ts`는 직접 equality binding을 추론하지만 비교 타입·collation 증명을 보존하지 않는다.
 - `sdi-runtime/src/runtime/index.ts`의 `input.parse()`는 임의 함수다. 함수 이름이나 샘플 입력 통과를 근거로 모든 입력의 무변환을 증명할 수 없다.

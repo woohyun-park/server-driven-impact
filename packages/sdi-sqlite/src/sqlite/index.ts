@@ -1,6 +1,17 @@
 import type { DatabaseSync, SQLInputValue, StatementSync } from 'node:sqlite';
 import type { WriteSet } from '@server-driven-impact/core';
-import { LIMITS, canonical, isScalar, type Scalar, type WriteFact, type RowState } from '@server-driven-impact/core';
+import {
+  LIMITS,
+  canonical,
+  isScalar,
+  validationReport,
+  assessResource,
+  mergeAssessment,
+  type ValidationReport,
+  type Scalar,
+  type WriteFact,
+  type RowState,
+} from '@server-driven-impact/core';
 import {
   bindAdapter,
   identityColumns,
@@ -13,7 +24,6 @@ import { guardDatabase } from '@server-driven-impact/runtime/adapter';
 import type { Input } from '@server-driven-impact/runtime';
 import { compileSelect } from './select.js';
 import { createHash } from 'node:crypto';
-import { ImpactUnavailableError } from '@server-driven-impact/runtime/adapter';
 
 export type DataRow = Record<string, unknown>;
 export type SqliteStatement = Pick<StatementSync, 'all' | 'get' | 'run'>;
@@ -124,35 +134,51 @@ function value(input: unknown): SQLInputValue {
 function bindings(values: unknown[]): Record<string, SQLInputValue> {
   return Object.fromEntries(values.map((v, i) => [String(i + 1), value(v)]));
 }
-function validateCatalog(database: DatabaseSync, resources: Resources): void {
+function validateCatalog(
+  database: DatabaseSync,
+  resources: Resources,
+  manifest: QueryManifest,
+  report: ValidationReport,
+): void {
   if (!database.prepare('pragma foreign_keys').get()?.foreign_keys) throw new Error('SQLITE_FOREIGN_KEYS_REQUIRED');
   for (const [id, resource] of Object.entries(resources)) {
-    if (resource.schema && resource.schema !== 'main') throw new Error('SQLITE_MAIN_SCHEMA_ONLY');
-    const entry = database.prepare('select type, sql from sqlite_schema where name=?').get(resource.table);
-    if (entry?.type !== 'table' || /CREATE\s+VIRTUAL\s+TABLE/i.test(String(entry.sql)))
-      throw new Error('UNSUPPORTED_TABLE:' + id);
-    const schemaTokens = sqlTokens(String(entry.sql));
-    if (
-      schemaTokens.some(
-        (token, index) =>
-          token === 'ON' && schemaTokens[index + 1] === 'CONFLICT' && schemaTokens[index + 2] === 'REPLACE',
+    try {
+      if (resource.schema && resource.schema !== 'main') throw new Error('SQLITE_MAIN_SCHEMA_ONLY');
+      const entry = database.prepare('select type, sql from sqlite_schema where name=?').get(resource.table);
+      if (entry?.type !== 'table' || /CREATE\s+VIRTUAL\s+TABLE/i.test(String(entry.sql)))
+        throw new Error('UNSUPPORTED_TABLE:' + id);
+      const schemaTokens = sqlTokens(String(entry.sql));
+      if (
+        schemaTokens.some(
+          (token, index) =>
+            token === 'ON' && schemaTokens[index + 1] === 'CONFLICT' && schemaTokens[index + 2] === 'REPLACE',
+        )
       )
-    )
-      throw new Error('SQLITE_SCHEMA_REPLACE_UNSUPPORTED:' + id);
-    const collations = schemaTokens.flatMap((token, index) =>
-      token === 'COLLATE' && schemaTokens[index + 1] ? [schemaTokens[index + 1]] : [],
-    );
-    if (collations.some(name => !['BINARY', 'NOCASE', 'RTRIM'].includes(name)))
-      throw new Error('SQLITE_CUSTOM_COLLATION_UNSUPPORTED:' + id);
-    const columns = database.prepare(`pragma table_xinfo(${ident(resource.table)})`).all();
-    const pk = columns.filter(c => Number(c.pk) > 0);
-    const identity = identityColumns(resource);
-    if (identity.length !== 1 || pk.length !== 1 || pk[0].name !== identity[0] || columns.some(c => c.hidden))
-      throw new Error('UNSUPPORTED_TABLE:' + id);
-    if (canonical(columns.map(c => c.name).sort()) !== canonical([...resource.columns].sort()))
-      throw new Error('COLUMN_DRIFT:' + id);
-    if (columns.some(c => !['TEXT', 'INTEGER', 'REAL'].includes(String(c.type).toUpperCase())))
-      throw new Error('SQLITE_UNSUPPORTED_COLUMN_TYPE:' + id);
+        throw new Error('SQLITE_SCHEMA_REPLACE_UNSUPPORTED:' + id);
+      const collations = schemaTokens.flatMap((token, index) =>
+        token === 'COLLATE' && schemaTokens[index + 1] ? [schemaTokens[index + 1]] : [],
+      );
+      if (collations.some(name => !['BINARY', 'NOCASE', 'RTRIM'].includes(name)))
+        throw new Error('SQLITE_CUSTOM_COLLATION_UNSUPPORTED:' + id);
+      const columns = database.prepare(`pragma table_xinfo(${ident(resource.table)})`).all();
+      const pk = columns.filter(c => Number(c.pk) > 0);
+      const identity = identityColumns(resource);
+      if (identity.length !== 1 || pk.length !== 1 || pk[0].name !== identity[0] || columns.some(c => c.hidden))
+        throw new Error('UNSUPPORTED_TABLE:' + id);
+      if (canonical(columns.map(c => c.name).sort()) !== canonical([...resource.columns].sort()))
+        throw new Error('COLUMN_DRIFT:' + id);
+      if (columns.some(c => !['TEXT', 'INTEGER', 'REAL'].includes(String(c.type).toUpperCase())))
+        throw new Error('SQLITE_UNSUPPORTED_COLUMN_TYPE:' + id);
+    } catch (error) {
+      if (
+        !(error instanceof Error) ||
+        !/^(UNSUPPORTED_TABLE|COLUMN_DRIFT|SQLITE_SCHEMA_REPLACE_UNSUPPORTED|SQLITE_CUSTOM_COLLATION_UNSUPPORTED|SQLITE_UNSUPPORTED_COLUMN_TYPE):/.test(
+          error.message,
+        )
+      )
+        throw error;
+      assessResource(report, manifest, id, { status: 'unavailable', codes: ['RESOURCE_DRIFT'] });
+    }
   }
 }
 
@@ -239,7 +265,7 @@ function installObservers(database: DatabaseSync, resources: Resources, manifest
     }
   }
 }
-function observedFacts(database: DatabaseSync): WriteFact[] {
+function collectRows(database: DatabaseSync) {
   const broad: WriteFact[] = database
     .prepare(`select resource from ${ident(collectorResources)} where widened=1 order by resource`)
     .all()
@@ -253,6 +279,9 @@ function observedFacts(database: DatabaseSync): WriteFact[] {
   const rows = database
     .prepare(`select resource,operation,before_state,after_state,changed_columns from ${ident(collectorTable)}`)
     .all();
+  return { broad, rows };
+}
+function observedFacts({ broad, rows }: ReturnType<typeof collectRows>): WriteFact[] {
   return [
     ...broad,
     ...rows.map(row => {
@@ -335,7 +364,8 @@ export function sqliteAdapter(options: SqliteOptions): ImpactAdapter<SqliteComma
   if (!database || typeof database.prepare !== 'function') throw new Error('SQLITE_CONNECTION_REQUIRED');
   return Object.freeze({
     [bindAdapter](resources: Resources, manifest: QueryManifest) {
-      let comparisonsValidated = false;
+      for (const resource of Object.values(resources))
+        if (resource.schema && resource.schema !== 'main') throw new Error('SQLITE_MAIN_SCHEMA_ONLY');
       const key = canonical({ resources, reads: manifest.reads });
       const prepare = (force = false) => {
         if (!force && activeObservers.get(database)?.key === key) return;
@@ -345,13 +375,27 @@ export function sqliteAdapter(options: SqliteOptions): ImpactAdapter<SqliteComma
           triggers: Object.keys(resources).flatMap(id => ['insert', 'update', 'delete'].map(op => triggerName(id, op))),
         });
       };
-      const validate = () =>
+      const runValidation = () =>
         serial(database, async () => {
-          comparisonsValidated = false;
-          validateCatalog(database, resources);
-          prepare(true);
-          comparisonsValidated = true;
+          const report = validationReport(manifest);
+          try {
+            validateCatalog(database, resources, manifest, report);
+            prepare(true);
+          } catch {
+            for (const endpoint of Object.keys(report.endpoints))
+              report.endpoints[endpoint] = mergeAssessment(report.endpoints[endpoint], {
+                status: 'unavailable',
+                codes: ['VALIDATION_FAILED'],
+              });
+          }
+          return report;
         });
+      let commandValidation: ReturnType<typeof runValidation> | undefined;
+      const validate = async () => {
+        const current = runValidation();
+        commandValidation = current;
+        return structuredClone(await current);
+      };
       const select: SelectExecutor = async (plan, input: Input) => {
         if (plan.kind !== 'select') throw new Error('POSTGRES_QUERY_REQUIRES_POSTGRES_ADAPTER');
         const statement = compileSelect(plan, input, resources);
@@ -410,9 +454,21 @@ export function sqliteAdapter(options: SqliteOptions): ImpactAdapter<SqliteComma
         validate,
         query: <T>(_scope: Scalar, work: (execute: SelectExecutor) => Promise<T>) =>
           transaction(true, () => work(select)),
-        command: <T>(_scope: Scalar, writes: WriteSet, work: (db: SqliteCommandDb) => Promise<T>) =>
-          serial(database, async () => {
-            prepare();
+        command: async <T>(_scope: Scalar, writes: WriteSet, work: (db: SqliteCommandDb) => Promise<T>) => {
+          commandValidation ??= runValidation();
+          const assessment = structuredClone(await commandValidation);
+          return serial(database, async () => {
+            try {
+              prepare();
+            } catch {
+              // A drifted relation may prevent installing its observer. Keep the
+              // write attempt available; actual statement/trigger errors still roll back.
+              for (const endpoint of Object.keys(assessment.endpoints))
+                assessment.endpoints[endpoint] = mergeAssessment(assessment.endpoints[endpoint], {
+                  status: 'unavailable',
+                  codes: ['OBSERVER_UNVERIFIED'],
+                });
+            }
             if (database.isTransaction) throw new Error('SQLITE_CONNECTION_ALREADY_IN_TRANSACTION');
             database.exec(`delete from ${ident(collectorTable)};delete from ${ident(collectorResources)}`);
             database.exec('begin immediate');
@@ -430,26 +486,37 @@ export function sqliteAdapter(options: SqliteOptions): ImpactAdapter<SqliteComma
                 guarded.close();
                 await guarded.settle();
               }
+              const observed = collectRows(database);
+              database.exec(`delete from ${ident(collectorTable)};delete from ${ident(collectorResources)}`);
               database.exec('commit');
               committed = true;
-              try {
-                const facts = observedFacts(database);
-                if (!comparisonsValidated)
-                  for (const fact of facts)
-                    for (const row of [fact.before, fact.after]) if (row.kind === 'known') delete row.equalityFields;
-                writes.add(facts);
-                database.exec(`delete from ${ident(collectorTable)};delete from ${ident(collectorResources)}`);
-              } catch (cause) {
-                throw new ImpactUnavailableError(data, { cause });
+              for (const raw of [...observed.broad.map(fact => ({ fact })), ...observed.rows.map(row => ({ row }))]) {
+                const resource = 'fact' in raw ? raw.fact.resource : raw.row?.resource;
+                try {
+                  writes.add('fact' in raw ? [raw.fact] : observedFacts({ broad: [], rows: [raw.row] }));
+                } catch {
+                  if (typeof resource === 'string' && Object.hasOwn(resources, resource))
+                    assessResource(assessment, manifest, resource, {
+                      status: 'unavailable',
+                      codes: ['OBSERVATION_FAILED'],
+                    });
+                  else
+                    for (const endpoint of Object.keys(assessment.endpoints))
+                      assessment.endpoints[endpoint] = mergeAssessment(assessment.endpoints[endpoint], {
+                        status: 'unavailable',
+                        codes: ['OBSERVATION_FAILED'],
+                      });
+                }
               }
-              return data;
+              return { data, assessment };
             } catch (error) {
               if (!committed && database.isTransaction) database.exec('rollback');
               if (!committed)
                 database.exec(`delete from ${ident(collectorTable)};delete from ${ident(collectorResources)}`);
               throw error;
             }
-          }),
+          });
+        },
       };
     },
   });

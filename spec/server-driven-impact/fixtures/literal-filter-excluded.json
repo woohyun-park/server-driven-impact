@@ -10,7 +10,6 @@
     }
   },
   "manifest": {
-    "protocolVersion": 1,
     "reads": {
       "ready": [
         {
@@ -58,8 +57,12 @@
     }
   ],
   "impact": {
-    "protocolVersion": 1,
-    "targets": []
+    "endpoints": {
+      "ready": {
+        "status": "verified",
+        "targets": []
+      }
+    }
   },
   "reasons": [
     "filter-excluded"

@@ -1,5 +1,7 @@
 # SDI 0.4 transaction impact migration
 
+Historical migration notes. The response, error, and validation contracts are superseded by [endpoint assessment contract](./endpoint-assessment.md).
+
 This release completes the mutation → observed WriteSet → narrowed ImpactSet → frontend response path on top of 0.3. It keeps protocol 1. Upgrade core, runtime and adapters together; the adapters require the 0.4 runtime's native statement guard. Existing 0.1 CRUD migration instructions remain in [postgres-0.2.md](./postgres-0.2.md).
 
 ## What changes

@@ -1,7 +1,13 @@
 export { createImpact } from './runtime/index.js';
 export type { Context, CommandResult } from './runtime/index.js';
-export { ImpactUnavailableError, CommitStateUnknownError, isCommitOutcomeError } from './runtime/errors.js';
-export type { CommitState } from './runtime/errors.js';
+export { CommitStateUnknownError } from './runtime/errors.js';
+export type {
+  ValidationReport,
+  Assessment,
+  EndpointImpact,
+  EndpointTarget,
+  ImpactReasonCode,
+} from '@server-driven-impact/core';
 export type { ImpactAdapter } from './runtime/adapter.js';
 export { q, defineQueries, compileManifest } from './query/index.js';
 export type {

@@ -17,7 +17,6 @@
     }
   },
   "manifest": {
-    "protocolVersion": 1,
     "reads": {
       "list": [
         {
@@ -61,8 +60,12 @@
     }
   ],
   "impact": {
-    "protocolVersion": 1,
-    "targets": []
+    "endpoints": {
+      "list": {
+        "status": "verified",
+        "targets": []
+      }
+    }
   },
   "reasons": [
     "columns-unchanged"

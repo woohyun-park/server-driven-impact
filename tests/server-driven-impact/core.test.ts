@@ -1,3 +1,4 @@
+import { affectedTargets } from './impact-assertions.js';
 import { Ajv2020 } from 'ajv/dist/2020.js';
 import { describe, it, expect } from 'vitest';
 import { readFileSync, readdirSync } from 'node:fs';
@@ -23,7 +24,6 @@ const resources: Resources = {
   },
 };
 const manifest: QueryManifest = {
-  protocolVersion: 1,
   reads: {
     list: [
       { resource: 'records', columns: ['value', 'filter', 'sort'], bindings: [{ column: 'filter', input: 'filter' }] },
@@ -99,11 +99,14 @@ describe('language neutral conformance', () => {
 describe('bounded facts and conservative impact', () => {
   it.each([null, false, true, 0, 19, 'x'])('matches JSON scalar %s', value => {
     const impact = engine.calculate([fact(value)], 'a');
-    expect(matchesInputSelector({ filter: value }, impact.targets[0].selector)).toBe(true);
+    expect(matchesInputSelector({ filter: value }, affectedTargets(impact)[0].selector)).toBe(true);
     expect(
-      matchesInputSelector({ filter: typeof value === 'string' ? 19 : 'different' }, impact.targets[0].selector),
+      matchesInputSelector(
+        { filter: typeof value === 'string' ? 19 : 'different' },
+        affectedTargets(impact)[0].selector,
+      ),
     ).toBe(false);
-    expect(matchesInputSelector({}, impact.targets[0].selector)).toBe(true);
+    expect(matchesInputSelector({}, affectedTargets(impact)[0].selector)).toBe(true);
   });
   it('conservatively matches database numeric coercion and SQLite built-in collations', () => {
     const selector = { kind: 'inputs' as const, values: [{ filter: 1 }] };
@@ -114,29 +117,33 @@ describe('bounded facts and conservative impact', () => {
     expect(matchesInputSelector({ filter: 'work   ' }, { kind: 'inputs', values: [{ filter: 'work' }] })).toBe(true);
   });
   it('unknown OLD widens but absent OLD does not; cross-tenant fields never escape', () => {
-    expect(engine.calculate([fact('old')], 'b').targets).toEqual([]);
+    expect(affectedTargets(engine.calculate([fact('old')], 'b'))).toEqual([]);
     const impact = engine.calculate([{ ...fact('new'), before: { kind: 'unknown' } }], 'a');
-    expect(impact.targets[0].selector).toEqual({ kind: 'all' });
+    expect(affectedTargets(impact)[0].selector).toEqual({ kind: 'all' });
     expect(canonical(impact)).not.toContain('new');
   });
   it('scope membership changes matter even if projected columns did not change', () => {
     expect(
-      engine.calculate(
-        [{ ...fact('x'), operation: 'update', before: known('x', 'b'), changedColumns: ['tenant'] }],
-        'a',
-      ).targets,
+      affectedTargets(
+        engine.calculate(
+          [{ ...fact('x'), operation: 'update', before: known('x', 'b'), changedColumns: ['tenant'] }],
+          'a',
+        ),
+      ),
     ).toHaveLength(1);
   });
   it('known empty changed columns skip while unknown changes invalidate', () => {
-    expect(engine.calculate([{ ...fact('x'), operation: 'update', changedColumns: [] }], 'a').targets).toEqual([]);
-    expect(engine.calculate([{ ...fact('x'), operation: 'update' }], 'a').targets).toHaveLength(1);
+    expect(affectedTargets(engine.calculate([{ ...fact('x'), operation: 'update', changedColumns: [] }], 'a'))).toEqual(
+      [],
+    );
+    expect(affectedTargets(engine.calculate([{ ...fact('x'), operation: 'update' }], 'a'))).toHaveLength(1);
   });
   it('captures old and new filters and visited intermediate states', () => {
     const writes = [
       { ...fact(2), operation: 'update' as const, before: known(1), changedColumns: ['filter'] },
       { ...fact(3), operation: 'update' as const, before: known(2), changedColumns: ['filter'] },
     ];
-    expect(engine.calculate(writes, 'a').targets[0].selector).toEqual({
+    expect(affectedTargets(engine.calculate(writes, 'a'))[0].selector).toEqual({
       kind: 'inputs',
       values: [{ filter: 1 }, { filter: 2 }, { filter: 3 }],
     });
@@ -152,7 +159,7 @@ describe('bounded facts and conservative impact', () => {
     expect(writes.snapshot()[0].after).toEqual(known('x'));
     writes.add(Array.from({ length: LIMITS.facts }, (_, i) => fact(i)));
     expect(writes.snapshot()).toHaveLength(1);
-    expect(engine.calculate(writes.snapshot(), 'a').targets[0].selector.kind).toBe('all');
+    expect(affectedTargets(engine.calculate(writes.snapshot(), 'a'))[0].selector.kind).toBe('all');
     const bytes = new WriteSet();
     bytes.add([fact('x'.repeat(LIMITS.factBytes))]);
     expect(bytes.snapshot()[0].after).toEqual({ kind: 'known', scope: 'a', fields: {} });
@@ -170,20 +177,17 @@ describe('bounded facts and conservative impact', () => {
         .decisions.some(d => d.reason === 'selector-limit'),
     ).toBe(true);
     const result = engine.explain([fact('x'.repeat(LIMITS.impactBytes))], 'a');
-    expect(result.impact.targets[0].selector.kind).toBe('all');
+    expect(affectedTargets(result.impact)[0].selector.kind).toBe('all');
     expect(result.decisions.some(d => d.reason === 'byte-limit')).toBe(true);
   });
   it.each([NaN, Infinity, 1n, new Date(), { nested: true }])('rejects unsupported scalar values %s', value => {
     const writes = new WriteSet();
     expect(() => writes.add([fact(value as unknown as string)])).toThrow();
   });
-  it('validates unsupported manifest versions and columns before serving commands', () => {
-    expect(() => createImpact({ resources, manifest: { ...manifest, protocolVersion: 2 as 1 } })).toThrow(
-      'UNSUPPORTED_MANIFEST_VERSION',
-    );
-    expect(() =>
-      calculateImpact([], { resources, manifest: { ...manifest, protocolVersion: 2 as 1 }, scope: 'a' }),
-    ).toThrow('UNSUPPORTED_MANIFEST_VERSION');
+  it('rejects obsolete manifest fields and unknown columns before serving commands', () => {
+    const outdated = { ...manifest, protocolVersion: 2 };
+    expect(() => createImpact({ resources, manifest: outdated })).toThrow('INVALID_MANIFEST');
+    expect(() => calculateImpact([], { resources, manifest: outdated, scope: 'a' })).toThrow('INVALID_MANIFEST');
     expect(() =>
       compileManifest(
         { bad: { input: { parse: (v: unknown) => v }, plan: q.select('records', { columns: ['missing'] }) } },
@@ -256,7 +260,6 @@ describe('bounded facts and conservative impact', () => {
   });
   it('merges observed columns from duplicate read bindings', () => {
     const sql = generateObserverMigration(resources, {
-      protocolVersion: 1,
       reads: {
         detail: [
           { resource: 'records', columns: ['value'], bindings: [{ column: 'filter', input: 'filter' }] },

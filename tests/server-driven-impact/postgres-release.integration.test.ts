@@ -1,3 +1,4 @@
+import { affectedTargets } from './impact-assertions.js';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import postgres from 'postgres';
 import { Pool } from 'pg';
@@ -194,7 +195,7 @@ describe.skipIf(!enabled)('PostgreSQL release contract', () => {
     } else {
       expect(processed.data as PostgresExecuteResult).toMatchObject({ command: 'UPDATE', count: 1 });
     }
-    expect(processed.impact.targets).toEqual([]);
+    expect(affectedTargets(processed.impact)).toEqual([]);
     const missing = await engine.command({ scope: 'a' }, db =>
       db.savepoint(child => child.execute(new Sql(`update "${schema}".a set value=value where id='missing'`))),
     );
@@ -240,7 +241,7 @@ describe.skipIf(!enabled)('PostgreSQL release contract', () => {
       ]);
       if (JSON.stringify(before[index]) !== JSON.stringify(after[index]))
         expect(
-          changed.impact.targets.some(
+          affectedTargets(changed.impact).some(
             target => target.endpoint === 'q' + index && matchesInputSelector({ id: 'one' }, target.selector),
           ),
         ).toBe(true);
@@ -260,8 +261,8 @@ describe.skipIf(!enabled)('PostgreSQL release contract', () => {
         await db.execute(new Sql(`insert into "${schema}".a select 'overflow-a-'||g,g from generate_series(1,201) g`));
         await db.execute(new Sql(`insert into "${schema}".b values('overflow-b',1)`));
       });
-      expect(changed.impact.targets.map(target => target.endpoint)).toEqual(['readA', 'readB']);
-      expect(changed.impact.targets.every(target => target.selector.kind === 'all')).toBe(true);
+      expect(affectedTargets(changed.impact).map(target => target.endpoint)).toEqual(['readA', 'readB']);
+      expect(affectedTargets(changed.impact).every(target => target.selector.kind === 'all')).toBe(true);
     } finally {
       await admin.unsafe(
         `delete from "${schema}".a where id like 'overflow-a-%';delete from "${schema}".b where id='overflow-b'`,
@@ -309,7 +310,9 @@ describe.skipIf(!enabled)('PostgreSQL release contract', () => {
   it('recompiles changed views atomically, explicitly detects old artifacts and observes the new dependency', async () => {
     const definitions = { routed: definition(`select * from "${schema}".routed order by id`) };
     const previous = await install(definitions);
-    await expect(previous.engine.validate()).resolves.toBeUndefined();
+    expect(
+      Object.values((await previous.engine.validate()).endpoints).every(value => value.status === 'verified'),
+    ).toBe(true);
     const next = await migratePostgresQueries(admin, resources, definitions, {
       ...options(),
       change: async tx => {
@@ -318,13 +321,21 @@ describe.skipIf(!enabled)('PostgreSQL release contract', () => {
     });
     expect(next.manifest.reads.routed.map(read => read.resource)).toEqual(['b']);
     expect(await previous.engine.query('routed', {}, { scope: 'a' })).toEqual([{ id: 'one', value: 10 }]);
-    await expect(previous.engine.validate()).rejects.toThrow('POSTGRES_ARTIFACT_DRIFT');
+    expect(
+      Object.values((await previous.engine.validate()).endpoints).every(
+        value => value.status === 'unavailable' && value.codes.includes('CATALOG_DRIFT'),
+      ),
+    ).toBe(true);
     const engine = createImpact({ adapter: adapter(), resources: next.resources, queries: next.queries });
     expect(await engine.query('routed', {}, { scope: 'a' })).toEqual([{ id: 'one', value: 10 }]);
     const changed = await engine.command({ scope: 'a' }, db =>
       db.execute(sql`update ${identifier(schema)}.b set value=11 where id='one'`),
     );
-    expect(changed.impact.targets).toContainEqual({ endpoint: 'routed', scope: 'global', selector: { kind: 'all' } });
+    expect(affectedTargets(changed.impact)).toContainEqual({
+      endpoint: 'routed',
+      scope: 'global',
+      selector: { kind: 'all' },
+    });
     await expect(
       migratePostgresQueries(admin, resources, definitions, {
         ...options(),
@@ -374,11 +385,19 @@ describe.skipIf(!enabled)('PostgreSQL release contract', () => {
     await admin.unsafe(
       `create or replace function "${schema}".shadow_read() returns bigint language sql stable as $$select count(*) from "${schema}".b$$`,
     );
-    await expect(first.engine.validate()).rejects.toThrow('POSTGRES_ARTIFACT_DRIFT');
+    expect(
+      Object.values((await first.engine.validate()).endpoints).every(
+        value => value.status === 'unavailable' && value.codes.includes('CATALOG_DRIFT'),
+      ),
+    ).toBe(true);
     const second = await install({ read: definition(`select * from "${schema}".a`) });
     await admin.unsafe(`revoke select on "${schema}".a from routine_runtime`);
     try {
-      await expect(second.engine.validate()).rejects.toThrow('POSTGRES_ARTIFACT_DRIFT');
+      expect(
+        Object.values((await second.engine.validate()).endpoints).every(
+          value => value.status === 'unavailable' && value.codes.includes('CATALOG_DRIFT'),
+        ),
+      ).toBe(true);
     } finally {
       await admin.unsafe(`grant select on "${schema}".a to routine_runtime`);
     }
@@ -402,16 +421,10 @@ describe.skipIf(!enabled)('PostgreSQL release contract', () => {
     });
     await active;
     let settled = false;
-    const waiting = engine.validate().then(
-      () => {
-        settled = true;
-        return undefined;
-      },
-      error => {
-        settled = true;
-        return error;
-      },
-    );
+    const waiting = engine.validate().then(report => {
+      settled = true;
+      return report;
+    });
     try {
       await new Promise(resolve => setTimeout(resolve, 25));
       expect(settled).toBe(false);
@@ -419,7 +432,7 @@ describe.skipIf(!enabled)('PostgreSQL release contract', () => {
       release();
       await changing;
     }
-    expect(await waiting).toMatchObject({ message: 'POSTGRES_ARTIFACT_DRIFT' });
+    expect((await waiting).endpoints.read).toEqual({ status: 'unavailable', codes: ['CATALOG_DRIFT'] });
   });
 
   it('prevents explicit transaction escape and DDL through the command SQL API', async () => {
@@ -554,6 +567,10 @@ describe.skipIf(!enabled)('PostgreSQL release contract', () => {
     );
     const after = await engine.query('text', { id: 'one' }, { scope: 'a' });
     expect(after).not.toEqual(before);
-    expect(changed.impact.targets).toContainEqual({ endpoint: 'text', scope: 'global', selector: { kind: 'all' } });
+    expect(affectedTargets(changed.impact)).toContainEqual({
+      endpoint: 'text',
+      scope: 'global',
+      selector: { kind: 'all' },
+    });
   });
 });
