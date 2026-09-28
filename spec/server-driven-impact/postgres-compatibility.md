@@ -74,7 +74,9 @@ BEGIN
 
 `setup`은 transaction 안에서 실행되며 `SET LOCAL ROLE`, `set_config(..., true)`를 사용할 수 있다. 요청 사이 session state, session advisory lock, LISTEN, 임시 객체 존속에 의존하면 안 된다.
 
-`generateObserverMigration()`은 안정된 `sdi_control.transaction_gate`를 설치하고 배타 잠금을 잡으며 runtime role에 접근 권한을 준다. 생성 SQL 전체는 하나의 명시적 migration transaction에서 적용한다. migration helper는 READ COMMITTED transaction에서 기존 migration 직렬화용 `pg_advisory_xact_lock`을 잡은 다음 gate의 ACCESS EXCLUSIVE lock을 잡는다. 둘 다 transaction 종료와 함께 해제되며 별도 unlock SQL이 없다. gate가 없으면 실행은 `POSTGRES_TRANSACTION_GATE_NOT_INITIALIZED`로 실패한다.
+`generateObserverMigration()`은 안정된 `sdi_control.transaction_gate`와 `sdi_control.validation`을 설치하고 gate에 배타 잠금을 잡으며 runtime role에 읽기 권한을 준다. validation 테이블은 owner만 쓴다. 생성 SQL 전체는 하나의 명시적 migration transaction에서 적용한다. migration helper는 READ COMMITTED transaction에서 기존 migration 직렬화용 `pg_advisory_xact_lock`을 잡은 다음 gate의 ACCESS EXCLUSIVE lock을 잡는다. 둘 다 transaction 종료와 함께 해제되며 별도 unlock SQL이 없다. gate나 validation 테이블이 없으면 실행은 `POSTGRES_CONTROL_NOT_INITIALIZED`로, 접근 권한이 없으면 `POSTGRES_CONTROL_ACCESS_DENIED`로 실패한다.
+
+migration helper와 `refreshPostgresValidation()`은 catalog와 observer를 검증한 결과를 모든 DDL 뒤에 `sdi_control.validation`의 단일 행으로 기록한다. 검증 문제는 기록할 뿐 migration을 실패시키지 않는다. 기록에는 catalog 해시와 해시 대상 스키마가 함께 남는다. 해시는 검증이 읽은 스키마(리소스·파티션 스키마, resolver가 방문한 스키마, `public`, stamp 스키마, observer 스키마)의 catalog 행 `xmin`과 cast·extension·role 정보로 계산하며, 검증 전후 해시가 같을 때만 기록한다. bound adapter의 첫 Command는 preamble 마지막 statement에서 해시가 일치하는 행만 받아들인다. 이후 Command는 그 행이나 그 결정 이후에 기록된 행만 받아들인다. 받아들일 행이 없으면 같은 transaction 안에서 `setup` 전에 직접 검증하고, `sdi_control.record_validation()`(SECURITY DEFINER, runtime role에 EXECUTE)으로 기록한 뒤 bound adapter에 캐시한다. 실행 중인 프로세스에 적용된 DDL은 다음 프로세스가 감지한다.
 
 ## Deferred 계약과 sealed 안전장치
 

@@ -46,6 +46,12 @@ export type Assessment =
 export interface ValidationReport {
   endpoints: Record<string, Assessment>;
 }
+/** The snapshot the next command uses: `stored` was recorded by an owner-side migration or refresh. */
+export interface ValidationResult {
+  report: ValidationReport;
+  source: 'stored' | 'live';
+  validatedAt: string;
+}
 export interface EndpointTarget {
   scope: 'caller' | 'global';
   selector: Selector;

@@ -101,7 +101,7 @@ opaque endpoint는 파싱한 값으로 그대로 실행하되 manifest의 입력
 
 커밋 뒤 impact 계산이 실패하면 `CommandResult.data`에 업무 결과가 보존됩니다. 전송 계층에서도 이를 유지해야 하며, 이미 커밋된 쓰기를 다시 실행하지 않도록 주의합니다.
 
-`validate()`는 명시적 메서드입니다. 시작, 배포, health check처럼 애플리케이션이 선택한 시점에 호출하세요. 일반 Query와 Command는 전체 DB catalog 검증을 반복하지 않습니다.
+`validate()`는 명시적 메서드이며, 다음 command가 사용할 스냅샷인 `{ report, source, validatedAt }`를 반환합니다. 일반 Query와 Command는 전체 DB catalog 검증을 반복하지 않습니다.
 
 `scope`는 영향 범위를 나누는 값일 뿐 인증과 인가를 대신하지 않습니다. 검증된 사용자 정보만 context에 넣고 DB의 RLS나 동등한 정책으로 실제 접근을 통제해야 합니다.
 
@@ -111,4 +111,4 @@ adapter 작성자는 `@server-driven-impact/runtime/adapter`의 안정된 계약
 
 mutation 계약은 커밋된 변경의 WriteSet 자동 수집, 누락 없는 정밀 ImpactSet 계산, `{ data, commitState: 'committed', impact }` 반환까지입니다. Native·ORM client는 각 도구의 실행 의미를 보존하며 Query 의존성 등록은 계속 필요합니다. [0.4 지원 범위와 이전](../../docs/migrations/transaction-impact-0.4.md).
 
-검증은 `ValidationReport`를 반환합니다. 첫 command가 고정한 검증 스냅샷은 명시적 `validate()`까지 재사용하며, 검증 이후 DDL은 감지하지 않습니다. 매 응답의 endpoint 상태를 처리해야 합니다. `unavailable`에는 targets가 없으며 해당 endpoint의 캐시를 무효화하거나 재사용을 중단해야 합니다. [endpoint별 impact 변경 안내](../../docs/migrations/endpoint-assessment.md).
+adapter는 command마다 검증 스냅샷을 고정합니다. PostgreSQL은 owner가 기록한 스냅샷을 우선 사용하고 없으면 한 번 직접 검증하며, SQLite는 한 번 직접 검증합니다. 명시적 `validate()`는 live 스냅샷을 갱신합니다. 스냅샷 이후의 DDL은 감지하지 않습니다. 매 응답의 endpoint 상태를 처리해야 합니다. `unavailable`에는 targets가 없으며 해당 endpoint의 캐시를 무효화하거나 재사용을 중단해야 합니다. [endpoint별 impact 변경 안내](../../docs/migrations/endpoint-assessment.md).

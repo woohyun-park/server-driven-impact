@@ -734,7 +734,7 @@ describe.skipIf(!enabled)('orders domain / real PostgreSQL conformance', () => {
     await admin.unsafe(
       `create table "${schema}".events_future partition of "${schema}".events for values from (20) to (30)`,
     );
-    expect((await hierarchy.validate()).endpoints['events.byId']).toMatchObject({
+    expect((await hierarchy.validate()).report.endpoints['events.byId']).toMatchObject({
       status: 'unavailable',
       codes: ['RESOURCE_DRIFT'],
     });
@@ -886,7 +886,7 @@ describe.skipIf(!enabled)('orders domain / real PostgreSQL conformance', () => {
       as $$begin return null;end$$`);
     const fresh = createImpact({ adapter: postgresAdapter({ database: db, setup }), resources, queries });
     try {
-      expect((await fresh.validate()).endpoints['orders.list']).toMatchObject({
+      expect((await fresh.validate()).report.endpoints['orders.list']).toMatchObject({
         status: 'unavailable',
         codes: ['OBSERVER_UNVERIFIED'],
       });
@@ -919,6 +919,6 @@ describe.skipIf(!enabled)('orders domain / real PostgreSQL conformance', () => {
     }
     await expect(
       createImpact({ adapter: postgresAdapter({ database: db, setup }), resources, queries }).validate(),
-    ).resolves.toHaveProperty('endpoints');
+    ).resolves.toHaveProperty('report.endpoints');
   });
 });

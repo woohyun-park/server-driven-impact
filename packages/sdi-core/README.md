@@ -43,4 +43,4 @@ Node.js 22.18 or newer is required.
 
 WriteSet compacts overflowing resources locally and retains bounded common OLD/NEW scope and fields. Selector count overflow keeps shared constraints; byte overflow widens individual targets. `createImpact().command()` calculates after adapter COMMIT/drain and classifies post-commit calculation failures as endpoint `unavailable` status. [Protocol semantics](../../spec/server-driven-impact/semantics.md).
 
-The pure calculator does not validate a database. Callers/adapters must provide complete manifest dependencies and write facts. Runtime adapters pin validation snapshots and return per-endpoint status. Handle unavailable endpoints on every command response. [Endpoint assessment migration](../../docs/migrations/endpoint-assessment.md).
+The pure calculator does not validate a database. Callers/adapters must provide complete manifest dependencies and write facts. Runtime adapters pin validation snapshots (owner-recorded or live) and return per-endpoint status. Handle unavailable endpoints on every command response. [Endpoint assessment migration](../../docs/migrations/endpoint-assessment.md).

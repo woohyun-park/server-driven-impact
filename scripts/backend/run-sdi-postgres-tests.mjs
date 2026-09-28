@@ -41,6 +41,7 @@ const child = spawn(
     'tests/server-driven-impact/observer-precision.integration.test.ts',
     'tests/server-driven-impact/postgres-literal-filter.integration.test.ts',
     'tests/server-driven-impact/postgres-rls-dependency.integration.test.ts',
+    'tests/server-driven-impact/postgres-stored-validation.integration.test.ts',
     'tests/server-driven-impact/native-orm.integration.test.ts',
     'tests/server-driven-impact/prisma.integration.test.ts',
     '--reporter=default',

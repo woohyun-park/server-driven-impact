@@ -2,6 +2,7 @@ import type { Scalar } from '@server-driven-impact/core';
 import { observerInternals } from './observer.js';
 import { literal } from './sql.js';
 import { transactionGateSharedLockSql } from './transaction-gate.js';
+import { storedValidationExpression } from './validation.js';
 
 export const ISOLATION_LEVELS = Object.freeze([
   'read uncommitted',
@@ -25,12 +26,22 @@ export const collectorTableSql =
   ') on commit drop';
 
 /** Transaction-pool-safe Query preamble. The gate lock is the first snapshot-bearing command. */
-export function transactionReadPreambleSql(isolationLevel: IsolationLevel): string {
+export function transactionReadPreambleSql(isolationLevel: IsolationLevel, readOnly = true): string {
   assertIsolationLevel(isolationLevel);
-  return [`begin isolation level ${isolationLevel} read only`, transactionGateSharedLockSql].join(';\n');
+  return [`begin isolation level ${isolationLevel}${readOnly ? ' read only' : ''}`, transactionGateSharedLockSql].join(
+    ';\n',
+  );
 }
 
-export function commandPreambleSql(options: { isolationLevel: IsolationLevel; token: string; scope: Scalar }): string {
+/** The last statement also returns the stored validation snapshot, so drivers see exactly one result row. */
+export function commandPreambleSql(options: {
+  isolationLevel: IsolationLevel;
+  token: string;
+  scope: Scalar;
+  fingerprint: string;
+  /** Compare the catalog hash too; done once per bound adapter because it scans catalog rows. */
+  catalogGate: boolean;
+}): string {
   assertIsolationLevel(options.isolationLevel);
   if (!TOKEN.test(options.token)) throw new Error('INVALID_REQUEST_TOKEN');
   const tag = `$sdi_${options.token.replaceAll('-', '')}$`;
@@ -47,6 +58,6 @@ export function commandPreambleSql(options: { isolationLevel: IsolationLevel; to
     `begin isolation level ${options.isolationLevel}`,
     transactionGateSharedLockSql,
     collectorTableSql,
-    `select set_config('sdi.request_token',${literal(options.token)},true),set_config('sdi.scope',${tag}${scope}${tag},true),set_config('sdi.observation_phase','collecting',true)`,
+    `select set_config('sdi.request_token',${literal(options.token)},true),set_config('sdi.scope',${tag}${scope}${tag},true),set_config('sdi.observation_phase','collecting',true),${storedValidationExpression(options.fingerprint, options.catalogGate)} as sdi_validation`,
   ].join(';\n');
 }

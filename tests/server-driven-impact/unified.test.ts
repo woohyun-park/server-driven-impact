@@ -387,16 +387,21 @@ describe('unified API / actual SQLite', () => {
       resources,
       queries: defineQueries({ all: { input: { parse: () => ({}) }, plan: q.select('unsafe') } }),
     });
-    expect((await engine.validate()).endpoints.all).toEqual({ status: 'unavailable', codes: ['RESOURCE_DRIFT'] });
+    expect((await engine.validate()).report.endpoints.all).toEqual({
+      status: 'unavailable',
+      codes: ['RESOURCE_DRIFT'],
+    });
   });
   it('reuses implicit SQLite validation and refreshes it only when requested', async () => {
     const { engine, database } = fixture();
     await engine.command(context, db => insert(db, 'orders', [order('without-validation')]));
     expect(await engine.query('orders.detail', { id: 'without-validation' }, context)).toHaveLength(1);
-    expect(Object.values((await engine.validate()).endpoints).every(value => value.status === 'verified')).toBe(true);
+    expect(Object.values((await engine.validate()).report.endpoints).every(value => value.status === 'verified')).toBe(
+      true,
+    );
     database.exec('alter table orders add column drift text');
     expect(await engine.query('orders.detail', { id: 'without-validation' }, context)).toHaveLength(1);
-    expect((await engine.validate()).endpoints['orders.list']).toEqual({
+    expect((await engine.validate()).report.endpoints['orders.list']).toEqual({
       status: 'unavailable',
       codes: ['RESOURCE_DRIFT'],
     });

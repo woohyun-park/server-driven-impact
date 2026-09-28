@@ -213,11 +213,11 @@ Use `matchesInputSelector()` from `@server-driven-impact/core` when an applicati
 pnpm add @server-driven-impact/core @server-driven-impact/runtime @server-driven-impact/postgres postgres
 ```
 
-A PostgreSQL application normally has two lifecycle paths:
+A PostgreSQL application normally has these lifecycle steps:
 
-1. after a relevant schema or Query-definition change, use schema-owner credentials to apply `generateObserverMigration(...)`;
-2. at startup, deployment, or a health-check boundary, call `engine.validate()` with the runtime connection;
-3. serve normal Query and Command traffic through the engine without repeating full catalog validation per request.
+1. after a relevant schema or Query-definition change, apply the observer migration with schema-owner credentials (`migratePostgresQueries(...)`, `migratePostgresArtifacts(...)`, or the SQL from `generateObserverMigration(...)`). The migration helpers also record a validation snapshot in `sdi_control.validation`; otherwise the first live validation records it;
+2. deploy the application after the database migration. The first Command of each process checks the snapshot against a catalog hash in its preamble instead of repeating catalog validation. If the hash moved, for example after DDL outside SDI, it validates live once, records the result for later processes, and caches it;
+3. optionally check `engine.validate()` at a readiness boundary. It returns `{ report, source: 'stored' | 'live', validatedAt }`.
 
 The runtime role needs its normal table privileges and should use RLS aligned with the scope set by the adapter's `setup` callback. postgres.js uses `postgresAdapter`. node-postgres uses `pgAdapter` from `@server-driven-impact/postgres/pg`; COPY with that driver also requires `pg-copy-streams`.
 
@@ -236,7 +236,7 @@ The library deliberately fails or widens when it cannot prove a narrow result. D
 - Successful commits return `data`, `commitState: 'committed'`, and endpoint별 impact. Each registered endpoint is `verified`, `conservative`, or `unavailable`. Unavailable endpoints have no targets and require cache invalidation or discontinued reuse on **every command response**.
 - `CommitStateUnknownError` means the client cannot determine whether the commit succeeded. Do not blindly retry a non-idempotent Command.
 
-`validate()` returns a report; mismatches do not block the write attempt. The first command caches a validation snapshot; only explicit validation refreshes it. In-flight commands keep their original snapshot. DDL after validation is not detected by that snapshot. SDI does not impose an HTTP envelope, retry policy, idempotency key, or durable outbox.
+`validate()` returns the snapshot the next command uses; mismatches do not block the write attempt. PostgreSQL uses the recorded snapshot while the catalog hash still matches, otherwise it validates live and records the result. In-flight commands keep their original snapshot. DDL applied while a process is running is detected by the next process, not the current one; see the [stored validation guide](./docs/migrations/stored-validation.md).
 
 See the [impact-only migration guide](./docs/migrations/impact-only-0.5.md) for the removed cache packages and server-side input normalization.
 

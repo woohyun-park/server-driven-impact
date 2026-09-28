@@ -21,7 +21,7 @@ export function fakeDatabase() {
     ]),
   );
   const session = {
-    unsafe: vi.fn(async (text: string, values?: readonly unknown[]) => {
+    unsafe: vi.fn(async (text: string, values?: readonly unknown[]): Promise<unknown> => {
       calls.push({ text, values });
       if (text.includes('server_version_num')) return [{ version: 180000 }];
       if (text.includes('observer_manifest')) return [{ fingerprint, definition_hashes: definitionHashes }];
@@ -217,14 +217,136 @@ describe('PostgreSQL adapter round trips', () => {
     expect(query.session.release).toHaveBeenCalledOnce();
   });
 
-  it('reports a missing transaction gate with a stable error', async () => {
+  it('reports missing or inaccessible control relations with stable errors on both preambles', async () => {
     const query = fakeDatabase();
     query.session.unsafe.mockRejectedValueOnce(Object.assign(new Error('missing relation'), { code: '42P01' }));
     const adapter = postgresAdapter({ database: query.database as never })[bindAdapter](resources, manifest);
-    await expect(adapter.query('tenant-a', async () => undefined)).rejects.toThrow(
-      'POSTGRES_TRANSACTION_GATE_NOT_INITIALIZED',
-    );
+    await expect(adapter.query('tenant-a', async () => undefined)).rejects.toThrow('POSTGRES_CONTROL_NOT_INITIALIZED');
     expect(query.calls.map(call => call.text)).toEqual(['rollback']);
+
+    const command = fakeDatabase();
+    const commandAdapter = bound(command.database);
+    command.session.unsafe.mockRejectedValueOnce(Object.assign(new Error('missing relation'), { code: '42P01' }));
+    const work = vi.fn(async () => undefined);
+    await expect(commandAdapter.command('tenant-a', new WriteSet(new Set(['rows'])), work)).rejects.toThrow(
+      'POSTGRES_CONTROL_NOT_INITIALIZED',
+    );
+    command.session.unsafe.mockRejectedValueOnce(
+      Object.assign(new Error('permission denied for table validation'), { code: '42501' }),
+    );
+    await expect(commandAdapter.command('tenant-a', new WriteSet(new Set(['rows'])), work)).rejects.toThrow(
+      'POSTGRES_CONTROL_ACCESS_DENIED',
+    );
+    // validate() reads the snapshot after its own preamble; a gate without the table must map the same way.
+    const implementation = command.session.unsafe.getMockImplementation()!;
+    let denial: Error & { code: string } = Object.assign(new Error('relation does not exist'), { code: '42P01' });
+    command.session.unsafe.mockImplementation(async (text: string, values?: readonly unknown[]) => {
+      if (text.includes('as sdi_validation') && !text.includes(';\n')) throw denial;
+      return implementation(text, values);
+    });
+    await expect(commandAdapter.validate()).rejects.toThrow('POSTGRES_CONTROL_NOT_INITIALIZED');
+    denial = Object.assign(new Error('permission denied for table validation'), { code: '42501' });
+    await expect(commandAdapter.validate()).rejects.toThrow('POSTGRES_CONTROL_ACCESS_DENIED');
+    command.session.unsafe.mockImplementation(implementation);
+    command.session.unsafe.mockRejectedValueOnce(
+      Object.assign(new Error('permission denied to create temporary tables'), { code: '42501' }),
+    );
+    await expect(commandAdapter.command('tenant-a', new WriteSet(new Set(['rows'])), work)).rejects.toThrow(
+      'permission denied to create temporary tables',
+    );
+    expect(work).not.toHaveBeenCalled();
+  });
+
+  it('reads a stored snapshot in the preamble and runs no catalog validation on a first command', async () => {
+    const { calls, session, database } = fakeDatabase();
+    const implementation = session.unsafe.getMockImplementation()!;
+    const row = {
+      report: { endpoints: { list: { status: 'verified' } } },
+      equality_resources: ['rows'],
+      catalog_schemas: ['public'],
+      validated_at: '2026-09-28T00:00:00+00:00',
+    };
+    const stored = { now: '2026-09-28T00:00:01+00:00', row, match: true };
+    // postgres.js nests multi-statement results; a single-statement read returns plain rows.
+    session.unsafe.mockImplementation(async (text: string, values?: readonly unknown[]) => {
+      if (!text.includes('as sdi_validation')) return implementation(text, values);
+      calls.push({ text, values });
+      return text.includes(';\n') ? [[], [{ sdi_validation: stored }]] : [{ sdi_validation: stored }];
+    });
+    const adapter = bound(database);
+    const data = await adapter.command('tenant-a', new WriteSet(new Set(['rows'])), async () => 'saved');
+    expect(data).toEqual({ data: 'saved', assessment: row.report });
+    expect(calls.map(call => call.text.split(' ')[0])).toEqual(['begin', 'set', 'delete', 'select', 'commit']);
+    // Only the first command of a bound adapter runs the catalog gate.
+    expect(calls[0].text).toContain('catalog_hash(');
+    calls.length = 0;
+    await adapter.command('tenant-a', new WriteSet(new Set(['rows'])), async () => 'saved');
+    expect(calls[0].text).not.toContain('catalog_hash(');
+    expect(session.release).toHaveBeenCalledTimes(2);
+    expect(await adapter.validate()).toMatchObject({ source: 'stored', validatedAt: '2026-09-28T00:00:00.000Z' });
+  });
+
+  it('shares one live validation between concurrent first commands', async () => {
+    const { calls, database } = fakeDatabase();
+    const adapter = bound(database);
+    await Promise.all(
+      [1, 2, 3].map(() => adapter.command('tenant-a', new WriteSet(new Set(['rows'])), async () => 'saved')),
+    );
+    expect(calls.filter(call => call.text.includes('observer_manifest'))).toHaveLength(1);
+  });
+
+  it('falls back to live validation inside the command transaction before setup when no snapshot matches', async () => {
+    const { calls, session, database } = fakeDatabase();
+    const setup = vi.fn(async () => undefined);
+    const adapter = postgresAdapter({ database: database as never, setup })[bindAdapter](resources, manifest);
+    setup.mockImplementation(async () => {
+      calls.push({ text: 'setup' });
+    });
+    const implementation = session.unsafe.getMockImplementation()!;
+    session.unsafe.mockImplementation(async (text: string, values?: readonly unknown[]) =>
+      text.startsWith('select current_user')
+        ? [{ current_role: 'runtime', session_role: 'runtime' }]
+        : implementation(text, values),
+    );
+    await adapter.command('tenant-a', new WriteSet(new Set(['rows'])), async () => 'saved');
+    const texts = calls.map(call => call.text);
+    expect(texts[0]).toContain('as sdi_validation');
+    const started = texts.indexOf('savepoint sdi_validation');
+    const released = texts.indexOf('release savepoint sdi_validation');
+    expect(started).toBeGreaterThan(0);
+    expect(texts.slice(started, released).some(text => text.includes('observer_manifest'))).toBe(true);
+    expect(texts.indexOf('setup')).toBeGreaterThan(released);
+    expect(texts.at(-1)).toBe('commit');
+    expect(session.release).toHaveBeenCalledOnce();
+    calls.length = 0;
+    await adapter.command('tenant-a', new WriteSet(new Set(['rows'])), async () => 'saved');
+    expect(calls.some(call => call.text.includes('observer_manifest'))).toBe(false);
+  });
+
+  it('records a live validation only when the catalog hash held across it', async () => {
+    for (const [hashes, recorded] of [
+      [['h1', 'h1'], true],
+      [['h1', 'h2'], false],
+    ] as const) {
+      const { calls, session, database } = fakeDatabase();
+      const implementation = session.unsafe.getMockImplementation()!;
+      let hashCall = 0;
+      session.unsafe.mockImplementation(async (text: string, values?: readonly unknown[]) => {
+        if (text.includes('as sdi_catalog_hash')) {
+          calls.push({ text, values });
+          return [[], [{ sdi_catalog_hash: hashes[hashCall++] }], []];
+        }
+        if (text.includes('record_validation(')) {
+          calls.push({ text, values });
+          return [{ recorded: true }];
+        }
+        return implementation(text, values);
+      });
+      await bound(database).command('tenant-a', new WriteSet(new Set(['rows'])), async () => 'saved');
+      const record = calls.find(call => call.text.includes('record_validation('));
+      expect(!!record).toBe(recorded);
+      if (record) expect(record.values?.slice(0, 2)).toEqual([observerFingerprint(resources, manifest), 'h1']);
+    }
   });
 
   it('rejects removed split and connection-mode options at activation', () => {

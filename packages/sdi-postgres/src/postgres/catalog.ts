@@ -42,6 +42,8 @@ export async function validateCatalog(
   resources: Resources,
   manifest?: QueryManifest,
   report?: ValidationReport,
+  /** Receives every schema the policy resolver visited, so callers can hash exactly what validation read. */
+  visitedSchemas?: Set<string>,
 ): Promise<ReadonlySet<string>> {
   const equalityResources = new Set<string>();
   const unsafeEqualityResources = new Set<string>();
@@ -188,5 +190,6 @@ export async function validateCatalog(
     }
   }
   for (const resource of unsafeEqualityResources) equalityResources.delete(resource);
+  for (const schema of resolver.schemas ?? []) visitedSchemas?.add(schema);
   return equalityResources;
 }

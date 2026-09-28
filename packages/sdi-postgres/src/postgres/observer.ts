@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { canonical, isScalar, LIMITS, type RowState, type Scalar, type WriteFact } from '@server-driven-impact/core';
 import { identityColumns, type QueryManifest, type Resources } from '@server-driven-impact/runtime/adapter';
 import { literal } from './sql.js';
-import { transactionGateExclusiveLockSql, transactionGateRelation, transactionGateSchema } from './transaction-gate.js';
+import { transactionGateExclusiveLockSql, transactionGateSql, validationControlSql } from './transaction-gate.js';
 
 export interface ObserverRow {
   resource: string;
@@ -216,9 +216,10 @@ export function generateObserverMigration(
   const fingerprint = observerFingerprint(resources, manifest);
   const { internalSchema } = observerLayout(fingerprint);
   const statements = [
-    `create schema if not exists "${transactionGateSchema}";`,
-    `create table if not exists ${transactionGateRelation}(singleton boolean primary key default true check(singleton));`,
+    ...transactionGateSql(options.runtimeRole).map(statement => `${statement};`),
     `${transactionGateExclusiveLockSql};`,
+    // After the gate lock, so running operations never see the snapshot relations being recreated.
+    ...validationControlSql(options.runtimeRole).map(statement => `${statement};`),
     `create schema if not exists ${internalSchema};`,
     `create table if not exists ${internalSchema}.${metadataTable}(singleton boolean primary key default true check(singleton),fingerprint text not null,definition_hashes jsonb not null default '{}'::jsonb);`,
     `insert into ${internalSchema}.${metadataTable}(singleton,fingerprint) values(true,${literal(fingerprint)}) on conflict(singleton) do update set fingerprint=excluded.fingerprint;`,
@@ -265,8 +266,6 @@ export function generateObserverMigration(
   );
   if (options.runtimeRole)
     statements.push(
-      `grant usage on schema "${transactionGateSchema}" to ${identifier(options.runtimeRole)};`,
-      `grant select on table ${transactionGateRelation} to ${identifier(options.runtimeRole)};`,
       `grant usage on schema ${internalSchema} to ${identifier(options.runtimeRole)};`,
       `grant select on ${internalSchema}.${metadataTable} to ${identifier(options.runtimeRole)};`,
     );
