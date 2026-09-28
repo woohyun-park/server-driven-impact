@@ -25,6 +25,7 @@ function fixture(
     validation?: Error;
     independent?: boolean;
     observerMismatch?: string;
+    stored?: unknown;
   } = {},
 ) {
   const observedResources = failures.independent
@@ -86,6 +87,8 @@ function fixture(
   const tx = {
     unsafe: vi.fn(async (text: string) => {
       if (text.includes('observer_manifest') && failures.validation) throw failures.validation;
+      if (text.includes('as sdi_validation') && failures.stored !== undefined)
+        return [{ set_config: 'collecting', sdi_validation: { now: '2026-09-28T00:00:01+00:00', ...failures.stored } }];
       if (text.includes("set_config('sdi.observation_phase','sealed'")) commandReadyToCommit = true;
       if (text === 'commit' && commandReadyToCommit && commitError) throw commitError;
       if (text === 'rollback' && failures.rollback) throw failures.rollback;
@@ -185,7 +188,7 @@ it('rolls back when observation collection fails before commit', async () => {
   expect(unavailable).toMatchObject({ message: 'collector unavailable' });
   expect(work).toHaveBeenCalledTimes(1);
   expect(discard).not.toHaveBeenCalled();
-  expect(release).toHaveBeenCalledTimes(2);
+  expect(release).toHaveBeenCalledOnce();
 });
 
 it('returns committed data with unavailable endpoints when impact conversion fails after commit', async () => {
@@ -196,7 +199,7 @@ it('returns committed data with unavailable endpoints when impact conversion fai
     data: 'saved',
   });
   expect(discard).not.toHaveBeenCalled();
-  expect(release).toHaveBeenCalledTimes(2);
+  expect(release).toHaveBeenCalledOnce();
 });
 
 it('discards a connection after rollback failure and preserves the original command failure', async () => {
@@ -207,7 +210,7 @@ it('discards a connection after rollback failure and preserves the original comm
     }),
   ).rejects.toThrow('business failed');
   expect(discard).toHaveBeenCalledOnce();
-  expect(release).toHaveBeenCalledOnce();
+  expect(release).not.toHaveBeenCalled();
 });
 
 it('reuses failed validation until explicit recovery and preserves the exact driver result after observation failure', async () => {
@@ -231,7 +234,7 @@ it('reuses failed validation until explicit recovery and preserves the exact dri
   await engine.command({ scope: null }, work);
   expect(validations()).toBe(1);
   failures.observerRows = [];
-  expect((await engine.validate()).endpoints.list.status).toBe('verified');
+  expect((await engine.validate()).report.endpoints.list.status).toBe('verified');
   expect((await engine.command({ scope: null }, work)).impact.endpoints.list).toEqual({
     status: 'verified',
     targets: [],
@@ -286,15 +289,15 @@ it('last-started validation wins even if an older validation finishes later', as
   });
   const old = engine.validate();
   await ready;
-  expect((await engine.validate()).endpoints.list.status).toBe('verified');
+  expect((await engine.validate()).report.endpoints.list.status).toBe('verified');
   resume();
-  expect((await old).endpoints.list.status).toBe('unavailable');
+  expect((await old).report.endpoints.list.status).toBe('unavailable');
   expect((await engine.command({ scope: null }, async () => 'saved')).impact.endpoints.list.status).toBe('verified');
 });
 
 it('isolates observer mismatch and malformed known-resource observations after complete dependency validation', async () => {
   const { engine } = fixture(undefined, { independent: true, observerMismatch: 'parent' });
-  expect((await engine.validate()).endpoints).toEqual({
+  expect((await engine.validate()).report.endpoints).toEqual({
     list: { status: 'unavailable', codes: ['OBSERVER_UNVERIFIED'] },
     other: { status: 'verified' },
   });
@@ -341,4 +344,34 @@ it('preserves committed runtime data when calculation fails without rerunning th
   } finally {
     snapshot.mockRestore();
   }
+});
+
+it('uses an owner-written snapshot without catalog validation and falls back to live validation otherwise', async () => {
+  const row = {
+    report: { endpoints: { list: { status: 'conservative', codes: ['PRECISION_REDUCED'] } } },
+    equality_resources: [],
+    catalog_schemas: ['public'],
+    validated_at: '2026-09-28T00:00:00.000+00:00',
+  };
+  const stored = { row, match: true };
+  const { engine, tx } = fixture(undefined, { stored });
+  const catalogReads = () =>
+    tx.unsafe.mock.calls.filter(([text]) => text.includes('pg_class') || text.includes('observer_manifest')).length;
+  const result = await engine.command({ scope: null }, async () => 'saved');
+  expect(result.impact.endpoints.list).toEqual({ status: 'conservative', codes: ['PRECISION_REDUCED'], targets: [] });
+  expect(catalogReads()).toBe(0);
+  expect(await engine.validate()).toEqual({
+    report: row.report,
+    source: 'stored',
+    validatedAt: '2026-09-28T00:00:00.000Z',
+  });
+  expect(catalogReads()).toBe(0);
+
+  // A snapshot for another manifest shape is ignored rather than trusted.
+  const malformed = fixture(undefined, {
+    stored: { row: { report: { endpoints: {} }, equality_resources: [], validated_at: row.validated_at }, match: true },
+  });
+  const fallback = await malformed.engine.command({ scope: null }, async () => 'saved');
+  expect(fallback.impact.endpoints.list).toEqual({ status: 'verified', targets: [] });
+  expect((await malformed.engine.validate()).source).toBe('live');
 });

@@ -177,8 +177,9 @@ describe.skipIf(!enabled)('PostgreSQL release contract', () => {
     );
     expect(statements.filter(text => catalogSql.test(text))).toEqual([]);
     statements.length = 0;
-    await engine.validate();
-    expect(statements.some(text => catalogSql.test(text))).toBe(true);
+    // The first Command recorded its live validation, so explicit validation passes the catalog gate.
+    expect((await engine.validate()).source).toBe('stored');
+    expect(statements.filter(text => catalogSql.test(text))).toEqual([]);
   });
 
   it('preserves driver command metadata through command data and savepoints', async () => {
@@ -311,7 +312,7 @@ describe.skipIf(!enabled)('PostgreSQL release contract', () => {
     const definitions = { routed: definition(`select * from "${schema}".routed order by id`) };
     const previous = await install(definitions);
     expect(
-      Object.values((await previous.engine.validate()).endpoints).every(value => value.status === 'verified'),
+      Object.values((await previous.engine.validate()).report.endpoints).every(value => value.status === 'verified'),
     ).toBe(true);
     const next = await migratePostgresQueries(admin, resources, definitions, {
       ...options(),
@@ -322,7 +323,7 @@ describe.skipIf(!enabled)('PostgreSQL release contract', () => {
     expect(next.manifest.reads.routed.map(read => read.resource)).toEqual(['b']);
     expect(await previous.engine.query('routed', {}, { scope: 'a' })).toEqual([{ id: 'one', value: 10 }]);
     expect(
-      Object.values((await previous.engine.validate()).endpoints).every(
+      Object.values((await previous.engine.validate()).report.endpoints).every(
         value => value.status === 'unavailable' && value.codes.includes('CATALOG_DRIFT'),
       ),
     ).toBe(true);
@@ -386,7 +387,7 @@ describe.skipIf(!enabled)('PostgreSQL release contract', () => {
       `create or replace function "${schema}".shadow_read() returns bigint language sql stable as $$select count(*) from "${schema}".b$$`,
     );
     expect(
-      Object.values((await first.engine.validate()).endpoints).every(
+      Object.values((await first.engine.validate()).report.endpoints).every(
         value => value.status === 'unavailable' && value.codes.includes('CATALOG_DRIFT'),
       ),
     ).toBe(true);
@@ -394,7 +395,7 @@ describe.skipIf(!enabled)('PostgreSQL release contract', () => {
     await admin.unsafe(`revoke select on "${schema}".a from routine_runtime`);
     try {
       expect(
-        Object.values((await second.engine.validate()).endpoints).every(
+        Object.values((await second.engine.validate()).report.endpoints).every(
           value => value.status === 'unavailable' && value.codes.includes('CATALOG_DRIFT'),
         ),
       ).toBe(true);
@@ -432,7 +433,7 @@ describe.skipIf(!enabled)('PostgreSQL release contract', () => {
       release();
       await changing;
     }
-    expect((await waiting).endpoints.read).toEqual({ status: 'unavailable', codes: ['CATALOG_DRIFT'] });
+    expect((await waiting).report.endpoints.read).toEqual({ status: 'unavailable', codes: ['CATALOG_DRIFT'] });
   });
 
   it('prevents explicit transaction escape and DDL through the command SQL API', async () => {

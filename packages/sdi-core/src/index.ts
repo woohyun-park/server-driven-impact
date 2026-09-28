@@ -16,6 +16,7 @@ export type {
   EndpointImpact,
   Assessment,
   ValidationReport,
+  ValidationResult,
   ImpactReasonCode,
   CommandResult,
   ReadDependency,

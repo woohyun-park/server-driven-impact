@@ -132,7 +132,8 @@ it('SQLite caches failed reports, isolates resource drift, and recovers only on 
     database.exec('alter table first drop column value');
     const cached = await engine.command({ scope: null }, async () => 'saved');
     expect(cached.impact.endpoints.first.status).toBe('unavailable');
-    const report = await engine.validate();
+    const { report, source } = await engine.validate();
+    expect(source).toBe('live');
     report.endpoints.first = { status: 'unavailable', codes: ['VALIDATION_FAILED'] };
     expect((await engine.command({ scope: null }, async () => 'saved')).impact.endpoints.first).toEqual({
       status: 'verified',

@@ -213,11 +213,11 @@ Command 콜백의 모든 작업은 반드시 `await`해야 합니다. 다른 연
 pnpm add @server-driven-impact/core @server-driven-impact/runtime @server-driven-impact/postgres postgres
 ```
 
-PostgreSQL 애플리케이션은 보통 다음 두 실행 경로를 둡니다.
+PostgreSQL 애플리케이션은 보통 다음 순서로 운영합니다.
 
-1. 관련 schema나 Query 정의가 바뀌면 schema owner 권한으로 `generateObserverMigration(...)` 결과를 적용합니다.
-2. 시작, 배포 또는 health check 시점에 runtime 연결로 `engine.validate()`를 호출합니다.
-3. 일반 요청에서는 전체 catalog 검증을 반복하지 않고 engine을 통해 Query와 Command를 실행합니다.
+1. 관련 schema나 Query 정의가 바뀌면 schema owner 권한으로 observer migration을 적용합니다(`migratePostgresQueries(...)`, `migratePostgresArtifacts(...)`, 또는 `generateObserverMigration(...)`의 SQL). migration helper는 검증 스냅샷도 `sdi_control.validation`에 기록하고, 그 밖의 경로에서는 첫 live 검증이 기록합니다.
+2. DB migration을 적용한 뒤 애플리케이션을 배포합니다. 각 프로세스의 첫 Command는 catalog 검증을 반복하지 않고, preamble에서 스냅샷을 catalog 해시와 대조합니다. SDI 밖 DDL 등으로 해시가 바뀌었으면 한 번 직접 검증하고, 결과를 다음 프로세스를 위해 기록한 뒤 캐시합니다.
+3. 필요하면 readiness 확인에서 `engine.validate()`를 호출합니다. 반환값은 `{ report, source: 'stored' | 'live', validatedAt }`입니다.
 
 runtime role에는 일반적인 테이블 권한이 필요합니다. adapter의 `setup`이 설정하는 scope와 RLS 정책도 일치해야 합니다. postgres.js는 `postgresAdapter`를 사용합니다. node-postgres는 `@server-driven-impact/postgres/pg`의 `pgAdapter`를 사용하며, 이 드라이버에서 COPY를 사용할 때는 `pg-copy-streams`도 필요합니다.
 
@@ -236,7 +236,7 @@ SDI는 지원되는 작업이 SDI engine과 adapter가 소유한 transaction을 
 - 커밋이 성공하면 `data`, `commitState: 'committed'`, endpoint별 impact를 반환합니다. 모든 endpoint는 `verified`, `conservative`, `unavailable` 중 하나이며, `unavailable`에는 targets가 없습니다. 소비자는 **매 command 응답마다** 해당 endpoint 캐시를 무효화하거나 재사용을 중단해야 합니다.
 - `CommitStateUnknownError`는 클라이언트가 커밋 성공 여부를 알 수 없다는 뜻입니다. 멱등성이 없는 Command를 무조건 재시도하면 안 됩니다.
 
-`validate()`는 보고서를 반환하며 불일치만으로 쓰기 시도를 차단하지 않습니다. 첫 command의 검증 스냅샷은 명시적 재검증 전까지 재사용됩니다. 진행 중인 command는 원래 스냅샷을 유지하고 검증 이후 DDL을 감지하지 않습니다. SDI는 HTTP envelope, 재시도 정책, idempotency key, durable outbox 형식을 정하지 않습니다.
+`validate()`는 다음 command가 사용할 스냅샷을 반환하며, 불일치만으로 쓰기 시도를 차단하지 않습니다. PostgreSQL은 catalog 해시가 일치하는 동안 기록된 스냅샷을 사용하고, 일치하지 않으면 직접 검증한 뒤 결과를 기록합니다. 진행 중인 command는 원래 스냅샷을 유지합니다. 프로세스가 실행되는 동안 적용된 DDL은 그 프로세스가 아니라 다음 프로세스가 감지합니다. [저장형 검증 안내](./docs/migrations/stored-validation.md)를 참고하세요.
 
 삭제된 캐시 패키지와 서버 입력 정규화 방식은 [impact-only 전환 가이드](./docs/migrations/impact-only-0.5.md)를 참고하세요.
 

@@ -1,4 +1,4 @@
-import type { Scalar, WriteSet, ValidationReport } from '@server-driven-impact/core';
+import type { Scalar, WriteSet, ValidationReport, ValidationResult } from '@server-driven-impact/core';
 import type { ExecutableQueryPlan, Input, QueryManifest } from '../query/plan.js';
 import type { Resources } from '../resources.js';
 
@@ -7,7 +7,7 @@ export const bindAdapter: unique symbol = Symbol('sdi.adapter');
 export type SelectExecutor = (plan: ExecutableQueryPlan, input: Input) => Promise<unknown[]>;
 export interface BoundAdapter<Db> {
   readonly artifact?: string;
-  validate(): Promise<ValidationReport>;
+  validate(): Promise<ValidationResult>;
   query<T>(scope: Scalar, work: (select: SelectExecutor) => Promise<T>): Promise<T>;
   command<T>(
     scope: Scalar,

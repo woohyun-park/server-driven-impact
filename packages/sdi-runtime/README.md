@@ -50,7 +50,7 @@ console.log(await engine.query('todos.byStatus', { status: 'done' }, { scope: 'a
 database.close();
 ```
 
-Commands return `{ data, commitState: 'committed', impact }`. The application decides how to serialize that value over HTTP and how a frontend uses it. `validate()` is explicit and is suitable for startup, deployment, or a health check; normal Query and Command execution does not scan the whole database catalog.
+Commands return `{ data, commitState: 'committed', impact }`. The application decides how to serialize that value over HTTP and how a frontend uses it. `validate()` is explicit and returns `{ report, source, validatedAt }`, the snapshot the next command uses; normal Query and Command execution does not scan the whole database catalog.
 
 Query inputs default to `inputRelation: 'preserve'`. If a parser changes a scalar used by a selector, runtime rejects the query because the dependency would describe a different input than SQL executed. Declare `inputRelation: 'opaque'` when normalization is server-owned:
 
@@ -72,4 +72,4 @@ Adapter authors use the stable contract exported by `@server-driven-impact/runti
 
 The mutation contract is automatic committed WriteSet collection followed by safely narrowed ImpactSet calculation and `{ data, commitState: 'committed', impact }` return. Native and ORM adapter clients keep their own execution semantics; Query dependency registration remains required. [0.4 support and migration](../../docs/migrations/transaction-impact-0.4.md).
 
-Validation returns a `ValidationReport`; the first command pins and caches a snapshot until explicit `validate()`. It does not detect later DDL. Handle endpoint status on every response: apply verified/conservative targets, and invalidate or stop reusing unavailable endpoint caches. [Endpoint assessment migration](../../docs/migrations/endpoint-assessment.md).
+Adapters pin a validation snapshot per command: PostgreSQL prefers an owner-recorded snapshot and otherwise validates live once, SQLite validates live once; explicit `validate()` refreshes a live snapshot. Snapshots do not detect later DDL. Handle endpoint status on every response: apply verified/conservative targets, and invalidate or stop reusing unavailable endpoint caches. [Endpoint assessment migration](../../docs/migrations/endpoint-assessment.md).

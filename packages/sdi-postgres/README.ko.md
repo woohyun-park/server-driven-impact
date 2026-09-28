@@ -119,9 +119,9 @@ console.log(impact.endpoints);
 
 운영 순서는 다음과 같습니다.
 
-1. schema나 Query 정의가 바뀐 배포에서 observer migration을 생성하고 적용합니다.
-2. 애플리케이션 시작이나 health check에서 `engine.validate()`를 호출합니다.
-3. 일반 요청은 engine의 Query와 Command를 사용합니다. bound adapter의 첫 Command도 protocol 10 observer 검증을 한 번 수행해 캐시하며, 이후 요청은 전체 catalog 검증을 반복하지 않습니다.
+1. schema나 Query 정의가 바뀐 배포에서 schema owner 권한으로 observer migration을 적용하고 `runtimeRole`을 전달합니다. `migratePostgresQueries()`와 `migratePostgresArtifacts()`는 검증 스냅샷도 `sdi_control.validation`에 기록합니다.
+2. DB migration을 먼저 적용하고 애플리케이션을 배포합니다.
+3. 일반 요청은 engine의 Query와 Command를 사용합니다. bound adapter의 첫 Command는 preamble에서 스냅샷을 읽고, catalog 해시(검증이 의존하는 catalog 행의 `xmin`)가 그대로일 때만 사용합니다. 그래서 SDI 밖 DDL도 refresh 없이 감지합니다. 해시가 다르면 자기 transaction 안에서 `setup` 전에 직접 검증하고, 결과를 `sdi_control.record_validation()`으로 기록해 다음 프로세스가 쓰게 하며, 쓰기는 그대로 시도합니다. 첫 요청이 비용을 치르지 않게 하려면 owner 권한으로 `refreshPostgresValidation(database, resources, manifest)`를 실행합니다.
 
 자동 impact는 해당 SDI Command transaction 안의 등록 resource 쓰기를 대상으로 합니다. 다른 연결이나 외부 서비스에서 일어난 쓰기는 현재 Command 결과에 자동으로 포함되지 않습니다.
 
@@ -140,7 +140,7 @@ const adapter = postgresAdapter({ database, setup });
 
 `pgAdapter({ database: pool })`, `drizzleAdapter`, `prismaAdapter`도 같은 계약을 사용합니다. 제거된 `query`, `command`, `connectionMode` 옵션을 전달하면 조용히 무시하지 않고 `POSTGRES_CONNECTION_OPTIONS_REMOVED`로 실패합니다.
 
-각 작업은 transaction을 시작하고 애플리케이션 작업 전에 안정된 `sdi_control.transaction_gate`에 ACCESS SHARE lock을 잡습니다. migration helper는 같은 gate에 ACCESS EXCLUSIVE lock을 잡습니다. `generateObserverMigration()`은 gate를 설치하고 배타 잠금을 잡아 runtime role 권한을 부여합니다. 생성 SQL 전체를 하나의 명시적 migration transaction에서 적용해야 합니다. 또한 `migratePostgresQueries()`와 `migratePostgresArtifacts()`는 transaction 단위 advisory lock으로 migration 준비도 직렬화합니다. gate가 없으면 `POSTGRES_TRANSACTION_GATE_NOT_INITIALIZED`로 실패합니다.
+각 작업은 transaction을 시작하고 애플리케이션 작업 전에 안정된 `sdi_control.transaction_gate`에 ACCESS SHARE lock을 잡습니다. migration helper는 같은 gate에 ACCESS EXCLUSIVE lock을 잡습니다. `generateObserverMigration()`은 gate를 설치하고 배타 잠금을 잡아 runtime role 권한을 부여합니다. 생성 SQL 전체를 하나의 명시적 migration transaction에서 적용해야 합니다. 또한 `migratePostgresQueries()`와 `migratePostgresArtifacts()`는 transaction 단위 advisory lock으로 migration 준비도 직렬화합니다. gate나 validation 테이블이 없으면 `POSTGRES_CONTROL_NOT_INITIALIZED`로, runtime role에 접근 권한이 없으면 `POSTGRES_CONTROL_ACCESS_DENIED`로 실패합니다.
 
 Command는 transaction 안에서 `ON COMMIT DROP` collector를 만듭니다. callback을 닫고 이미 시작된 DB 작업을 모두 정리한 다음 `SET CONSTRAINTS ALL IMMEDIATE`를 실행하고, observation 행을 메모리로 복사하고, observation을 sealed 상태로 만든 뒤 COMMIT합니다. 성공한 COMMIT 뒤에는 SQL을 실행하지 않습니다. drain 뒤 다시 defer된 등록 resource 쓰기가 COMMIT에서 실행되면 `SDI_OBSERVATION_SEALED`로 전체 transaction이 실패하므로 impact 없이 커밋될 수 없습니다. 따라서 deferred constraint와 constraint trigger는 SDI의 COMMIT 전 observation 경계에서 성공해야 합니다. COMMIT 끝부분의 다른 실행 순서에 의존한 코드는 수정해야 합니다.
 
@@ -184,4 +184,4 @@ compiler와 validator는 artifact의 정책 분석 근거를 공유합니다. �
 정책·함수·소유자·역할 상속·RLS 상태 변경을 감지합니다. SDI는 PostgreSQL의 MVCC나
 다른 행을 참조하는 정책 자체의 동시성 문제를 변경하지 않습니다.
 
-검증은 `ValidationReport`를 반환합니다. 첫 command가 고정한 검증 스냅샷은 명시적 `validate()`까지 재사용하며, 검증 이후 DDL은 감지하지 않습니다. 매 응답의 endpoint 상태를 처리해야 합니다. `unavailable`에는 targets가 없으며 해당 endpoint의 캐시를 무효화하거나 재사용을 중단해야 합니다. [endpoint별 impact 변경 안내](../../docs/migrations/endpoint-assessment.md).
+`validate()`는 `{ report, source, validatedAt }`를 반환합니다. 기록된 스냅샷이 catalog 게이트를 통과하면 `stored`, 아니면 새로 검증하고 기록한 `live`입니다. read-write transaction에서 실행되므로 배포 preflight에서 호출하면 스냅샷도 기록됩니다. runtime role은 자기 검증으로 증명한 스냅샷을 기록할 수 있으므로, runtime 자격 증명이 유출되면 거짓 스냅샷이 기록될 수 있습니다. 그 영향은 클라이언트 캐시가 낡게 남는 것으로 한정됩니다. [저장형 검증 안내](../../docs/migrations/stored-validation.md).

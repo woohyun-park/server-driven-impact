@@ -56,7 +56,7 @@ describe.skipIf(!enabled)('PostgreSQL transaction pool', () => {
       close(): Promise<void>;
       query(): Promise<void>;
       command(): Promise<void>;
-      validate(): Promise<import('@server-driven-impact/core').ValidationReport>;
+      validate(): Promise<import('@server-driven-impact/core').ValidationResult>;
     }> = [];
     const clientCount = Number(process.env.SDI_POSTGRES_TRANSACTION_CLIENTS ?? 30);
     for (let index = 0; index < clientCount; index++) {

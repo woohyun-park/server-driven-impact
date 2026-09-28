@@ -8,6 +8,7 @@ import {
   assessResource,
   mergeAssessment,
   type ValidationReport,
+  type ValidationResult,
   type Scalar,
   type WriteFact,
   type RowState,
@@ -388,13 +389,14 @@ export function sqliteAdapter(options: SqliteOptions): ImpactAdapter<SqliteComma
                 codes: ['VALIDATION_FAILED'],
               });
           }
-          return report;
+          return { report, validatedAt: new Date().toISOString() };
         });
       let commandValidation: ReturnType<typeof runValidation> | undefined;
-      const validate = async () => {
+      const validate = async (): Promise<ValidationResult> => {
         const current = runValidation();
         commandValidation = current;
-        return structuredClone(await current);
+        const { report, validatedAt } = await current;
+        return { report: structuredClone(report), source: 'live', validatedAt };
       };
       const select: SelectExecutor = async (plan, input: Input) => {
         if (plan.kind !== 'select') throw new Error('POSTGRES_QUERY_REQUIRES_POSTGRES_ADAPTER');
@@ -456,7 +458,7 @@ export function sqliteAdapter(options: SqliteOptions): ImpactAdapter<SqliteComma
           transaction(true, () => work(select)),
         command: async <T>(_scope: Scalar, writes: WriteSet, work: (db: SqliteCommandDb) => Promise<T>) => {
           commandValidation ??= runValidation();
-          const assessment = structuredClone(await commandValidation);
+          const assessment = structuredClone((await commandValidation).report);
           return serial(database, async () => {
             try {
               prepare();

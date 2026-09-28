@@ -89,15 +89,15 @@ describe.skipIf(!enabled)('RLS hidden row and column dependencies', () => {
       generateObserverMigration(resources, compileManifest(queries, resources), { runtimeRole: 'routine_runtime' }),
     );
     const engine = createImpact({ adapter: postgresAdapter({ database }), resources, queries });
-    expect((await engine.validate()).endpoints.assessed.status).toBe('verified');
+    expect((await engine.validate()).report.endpoints.assessed.status).toBe('verified');
     await admin.unsafe(`alter table "${schema}".assessed enable row level security;
       create policy access on "${schema}".assessed using(exists(select 1 from "${schema}".controls));`);
     const identified = await engine.validate();
-    expect(identified.endpoints.assessed).toEqual({ status: 'unavailable', codes: ['CATALOG_DRIFT'] });
-    expect(identified.endpoints.unrelated.status).toBe('verified');
+    expect(identified.report.endpoints.assessed).toEqual({ status: 'unavailable', codes: ['CATALOG_DRIFT'] });
+    expect(identified.report.endpoints.unrelated.status).toBe('verified');
     await admin.unsafe(`alter policy access on "${schema}".assessed using(exists(select 1 from "${schema}".hidden));`);
     const unknown = await engine.validate();
-    expect(Object.values(unknown.endpoints).every(value => value.status === 'unavailable')).toBe(true);
+    expect(Object.values(unknown.report.endpoints).every(value => value.status === 'unavailable')).toBe(true);
     const saved = await engine.command({ scope: null }, tx =>
       tx.execute(sql`insert into ${identifier(schema)}.unrelated(id) values('saved')`),
     );

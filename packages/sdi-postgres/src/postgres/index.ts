@@ -2,11 +2,10 @@ import { guardDatabase } from '@server-driven-impact/runtime/adapter';
 import type postgres from 'postgres';
 import type { WriteSet } from '@server-driven-impact/core';
 import {
-  canonical,
   mergeAssessment,
-  validationReport,
   assessResource,
   type ValidationReport,
+  type ValidationResult,
   type Scalar,
 } from '@server-driven-impact/core';
 import {
@@ -19,16 +18,18 @@ import type { ExecutableQueryPlan, Input } from '@server-driven-impact/runtime';
 import { TrackedDb, type PostgresExecuteResult, type Transaction } from './tracked-db.js';
 import { executeDriver, type DriverExecution, type DriverQueryOptions } from './driver-execution.js';
 import { compileSelect } from './select.js';
-import { validateCatalog } from './catalog.js';
 import { sql, Sql } from './sql.js';
+import { observerFingerprint, observerInternals, rowsToFacts, type ObserverRow } from './observer.js';
+import { preloadCommandSqlParser } from './command-sql.js';
+import { controlSetupError } from './transaction-gate.js';
 import {
-  observationRelations,
-  observerFingerprint,
-  observerInternals,
-  observerLayout,
-  rowsToFacts,
-  type ObserverRow,
-} from './observer.js';
+  columnValue,
+  computeValidation,
+  readStored,
+  recordValidation,
+  storedValidationExpression,
+  type ValidationSnapshot,
+} from './validation.js';
 import { randomUUID } from 'node:crypto';
 import { CommitStateUnknownError } from '@server-driven-impact/runtime/adapter';
 import { createPostgresCatalogResolver } from './catalog-resolver.js';
@@ -50,7 +51,8 @@ export type {
 export type { CatalogPolicyDependency } from './catalog-resolver.js';
 export type { PolicyCommand, PolicyAnalysisContext } from './policy-analysis.js';
 export { resolvePostgresResources } from './catalog.js';
-export { migratePostgresArtifacts, migratePostgresQueries } from './migration.js';
+export { migratePostgresArtifacts, migratePostgresQueries, refreshPostgresValidation } from './migration.js';
+export type { PostgresStoredValidation } from './validation.js';
 export {
   compilePostgresArtifacts,
   type PostgresArtifacts,
@@ -161,97 +163,17 @@ export function postgresAdapter<T extends Record<string, unknown>>(
         if (!(await releaseTransactionConnection(session, broken))) quarantinedDatabases.add(options.database);
       };
       const fingerprint = observerFingerprint(resources, manifest);
-      const layout = observerLayout(fingerprint);
-      const performValidation = async (
-        database: Transaction,
-        report: ValidationReport,
-      ): Promise<ReadonlySet<string>> => {
-        const validatedEqualityResources = await validateCatalog(database, resources, manifest, report);
-        const rows = await database.unsafe(
-          `select fingerprint,definition_hashes from ${layout.internalSchema}.${layout.metadataTable} where singleton=true`,
-        );
-        if (
-          rows[0]?.fingerprint !== fingerprint ||
-          !rows[0]?.definition_hashes ||
-          typeof rows[0].definition_hashes !== 'object'
-        )
-          throw new Error('OBSERVER_MANIFEST_MISMATCH');
-        const definitionHashes = rows[0].definition_hashes as Record<string, string>;
-        const resourceTables = Object.values(resources).flatMap(observationRelations);
-        const installed = resourceTables.length
-          ? await database.unsafe(`
-          select ns.nspname as schema_name,c.relname as table_name,t.tgname,t.tgenabled,
-                 fns.nspname as function_schema,p.proname as function_name,
-                 t.tgtype as trigger_type,
-                 (t.tgtype & 1) <> 0 as row_level,(t.tgtype & 2) <> 0 as before_trigger,
-                 (t.tgtype & 64) <> 0 as instead_trigger,t.tgoldtable,t.tgnewtable,
-                 p.prosecdef,p.proconfig,l.lanname,md5(pg_get_functiondef(p.oid)) as function_hash
-          from pg_trigger t
-          join pg_class c on c.oid=t.tgrelid
-          join pg_namespace ns on ns.oid=c.relnamespace
-          join pg_proc p on p.oid=t.tgfoid
-          join pg_namespace fns on fns.oid=p.pronamespace
-          join pg_language l on l.oid=p.prolang
-          where not t.tgisinternal and t.tgname like 'sdi_observe_%'
-            and (ns.nspname,c.relname) in (${resourceTables.map(resource => `('${(resource.schema ?? 'public').replaceAll("'", "''")}','${resource.table.replaceAll("'", "''")}')`).join(',')})
-          order by ns.nspname,c.relname,t.tgname`)
-          : [];
-        const actual = new Map(installed.map(row => [`${row.schema_name}.${row.table_name}.${row.tgname}`, row]));
-        for (const [resourceId, resource] of Object.entries(resources)) {
-          for (const relation of observationRelations(resource)) {
-            for (const operation of ['delete', 'insert', 'truncate', 'update']) {
-              const key = `${relation.schema}.${relation.table}.sdi_observe_${operation}`;
-              const row = actual.get(key);
-              const expectedFunction = observerInternals.functionName(resourceId, operation);
-              const expectedOld = operation === 'delete' || operation === 'update' ? 'sdi_old_rows' : null;
-              const expectedNew = operation === 'insert' || operation === 'update' ? 'sdi_new_rows' : null;
-              const expectedType = { insert: 4, delete: 8, update: 16, truncate: 32 }[operation];
-              if (
-                !row ||
-                !['O', 'A'].includes(row.tgenabled) ||
-                Number(row.trigger_type) !== expectedType ||
-                row.row_level ||
-                row.before_trigger ||
-                row.instead_trigger ||
-                row.tgoldtable !== expectedOld ||
-                row.tgnewtable !== expectedNew ||
-                row.prosecdef ||
-                row.lanname !== 'plpgsql' ||
-                !Array.isArray(row.proconfig) ||
-                !row.proconfig.includes('search_path=pg_catalog, pg_temp') ||
-                row.function_schema !== layout.internalSchema ||
-                row.function_name !== expectedFunction ||
-                definitionHashes[expectedFunction] !== row.function_hash
-              ) {
-                assessResource(report, manifest, resourceId, { status: 'unavailable', codes: ['OBSERVER_UNVERIFIED'] });
-              }
-              actual.delete(key);
-            }
-          }
-        }
-        if (actual.size) throw new Error(`OBSERVER_COVERAGE_MISMATCH:${actual.keys().next().value}`);
-        const expectedFunctions = Object.entries(resources)
-          .filter(([, resource]) => resource.postgresKind !== 'materialized-view')
-          .flatMap(([resource]) =>
-            ['delete', 'insert', 'truncate', 'update'].map(operation =>
-              observerInternals.functionName(resource, operation),
-            ),
-          )
-          .sort();
-        if (canonical(Object.keys(definitionHashes).sort()) !== canonical(expectedFunctions))
-          throw new Error('OBSERVER_DEFINITION_SET_MISMATCH');
-        return validatedEqualityResources;
-      };
-      const readTransaction = async <V>(work: (transaction: Transaction) => Promise<V>): Promise<V> => {
+      const readTransaction = async <V>(
+        work: (transaction: Transaction) => Promise<V>,
+        readOnly = true,
+      ): Promise<V> => {
         const session = await reserve();
         let broken = false;
         try {
           try {
-            await session.unsafe(transactionReadPreambleSql(isolationLevel));
+            await session.unsafe(transactionReadPreambleSql(isolationLevel, readOnly));
           } catch (cause) {
-            const code = cause && typeof cause === 'object' && 'code' in cause ? String(cause.code) : '';
-            if (code === '42P01') throw new Error('POSTGRES_TRANSACTION_GATE_NOT_INITIALIZED', { cause });
-            throw cause;
+            throw controlSetupError(cause);
           }
           const data = await work(session);
           await session.unsafe('commit');
@@ -267,34 +189,59 @@ export function postgresAdapter<T extends Record<string, unknown>>(
           await release(session, broken);
         }
       };
-      const runValidation = async () => {
-        const report = validationReport(manifest);
-        let equalityResources: ReadonlySet<string> = new Set();
-        try {
-          equalityResources = await readTransaction(tx => performValidation(tx, report));
-        } catch (error) {
-          const message = error instanceof Error ? error.message : '';
-          const code = message.startsWith('OBSERVER_')
-            ? 'OBSERVER_UNVERIFIED'
-            : message === 'POSTGRES_ARTIFACT_DRIFT' || message.startsWith('UNRESOLVED_RLS_')
-              ? 'CATALOG_DRIFT'
-              : 'VALIDATION_FAILED';
-          for (const endpoint of Object.keys(report.endpoints))
-            report.endpoints[endpoint] = mergeAssessment(report.endpoints[endpoint], {
-              status: 'unavailable',
-              codes: [code],
-            });
+      // Live validation is the fallback when no stored snapshot passes the catalog gate. Its creator records
+      // the result so the next process can use it; it is cached per bound adapter until an explicit
+      // validate(), and concurrent commands share one computation.
+      let liveValidation: Promise<ValidationSnapshot> | undefined;
+      const live = (database: Transaction, seedSchemas: readonly string[], refresh = false) => {
+        if (refresh || !liveValidation) {
+          const current = (async () => {
+            const snapshot = await computeValidation(database, resources, manifest, seedSchemas);
+            await recordValidation(database, fingerprint, snapshot);
+            return snapshot;
+          })();
+          liveValidation = current;
+          current.catch(() => {
+            if (liveValidation === current) liveValidation = undefined;
+          });
         }
-        // The promise, not its completion order, selects the next command's snapshot.
-        return { report, equalityResources };
+        return liveValidation;
       };
-      let commandValidation: ReturnType<typeof runValidation> | undefined;
-      const validate = async () => {
-        const current = runValidation();
-        commandValidation = current;
-        return structuredClone((await current).report);
+      // The catalog hash scans catalog rows, so only the first read of a bound adapter pays for it. Later
+      // commands accept the row that passed that gate, or a row recorded after the decision (a newer full
+      // validation); anything else falls back to the live snapshot.
+      let decision: { validatedAt?: string; at: string } | undefined;
+      const resolveSnapshot = async (
+        database: Transaction,
+        value: unknown,
+        gated: boolean,
+        refresh = false,
+      ): Promise<{ snapshot: ValidationSnapshot; source: 'stored' | 'live' }> => {
+        const read = readStored(value, manifest);
+        let stored = read.snapshot;
+        if (gated) decision = { validatedAt: stored?.validatedAt, at: read.now ?? new Date(0).toISOString() };
+        else if (
+          stored &&
+          decision &&
+          stored.validatedAt !== decision.validatedAt &&
+          !(stored.validatedAt > decision.at)
+        )
+          stored = undefined;
+        if (stored) return { snapshot: stored, source: 'stored' };
+        return { snapshot: await live(database, read.seedSchemas, refresh), source: 'live' };
       };
-      const ensureCommandValidated = () => (commandValidation ??= runValidation());
+      const validate = async (): Promise<ValidationResult> =>
+        // Read-write: a live validation here records its snapshot, which makes this a deployment preflight.
+        readTransaction(async tx => {
+          let result: unknown;
+          try {
+            result = await tx.unsafe(`select ${storedValidationExpression(fingerprint, true)} as sdi_validation`);
+          } catch (cause) {
+            throw controlSetupError(cause);
+          }
+          const { snapshot, source } = await resolveSnapshot(tx, columnValue(result, 'sdi_validation'), true, true);
+          return { report: structuredClone(snapshot.report), source, validatedAt: snapshot.validatedAt };
+        }, false);
       return {
         artifact: fingerprint,
         validate,
@@ -333,10 +280,10 @@ export function postgresAdapter<T extends Record<string, unknown>>(
           writes: WriteSet,
           work: (db: PostgresCommandDb) => Promise<V>,
         ): Promise<{ data: V; assessment: ValidationReport }> {
-          const snapshot = await ensureCommandValidated();
-          const assessment = structuredClone(snapshot.report);
-          const equalityResources = snapshot.equalityResources;
+          preloadCommandSqlParser();
           const session = await reserve();
+          let assessment!: ValidationReport;
+          let equalityResources!: ReadonlySet<string>;
           const token = randomUUID();
           const transactionState: {
             value: 'before-commit' | 'commit-in-flight' | 'committed' | 'commit-rejected' | 'commit-unknown';
@@ -345,7 +292,19 @@ export function postgresAdapter<T extends Record<string, unknown>>(
           let data!: V;
           let observed!: ObserverRow[];
           try {
-            await session.unsafe(commandPreambleSql({ isolationLevel, token, scope }));
+            let preamble: unknown;
+            const catalogGate = decision === undefined;
+            try {
+              preamble = await session.unsafe(
+                commandPreambleSql({ isolationLevel, token, scope, fingerprint, catalogGate }),
+              );
+            } catch (cause) {
+              throw controlSetupError(cause);
+            }
+            // Validate before setup so live validation runs with the connection role, as the stored one did.
+            const { snapshot } = await resolveSnapshot(session, columnValue(preamble, 'sdi_validation'), catalogGate);
+            assessment = structuredClone(snapshot.report);
+            equalityResources = snapshot.equalityResources;
             if (options.setup) {
               const [beforeSetup] = await session.unsafe(
                 'select current_user as current_role,session_user as session_role',
